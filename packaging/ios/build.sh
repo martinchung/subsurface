@@ -39,14 +39,11 @@ while [[ $# -gt 0 ]] ; do
 done
 
 # set up easy to use variables with the important paths
-TOP=$(pwd)
-SUBSURFACE_SOURCE=${TOP}/../../../subsurface
-pushd "$SUBSURFACE_SOURCE"/..
-PARENT_DIR=$(pwd)
+pushd "$(dirname "$0")/../../"
+export SUBSURFACE_SOURCE=$PWD
+cd ..
+export PARENT_DIR=$PWD
 popd
-
-# prepare build dir
-mkdir -p build-ios
 
 IOS_QT=~/Qt
 QT_VERSION=$(cd "$IOS_QT"; ls -d [1-9]* | awk -F. '{ printf("%02d.%02d.%02d\n", $1,$2,$3); }' | sort -n | tail -1 | sed -e 's/\.0/\./g;s/^0//')
@@ -57,21 +54,23 @@ if [ -z $QT_VERSION ] ; then
 fi
 
 # set up the Subsurface versions by hand
-GITVERSION=$(git describe --abbrev=12)
-CANONICALVERSION=$(git describe --abbrev=12 | sed -e 's/-g.*$// ; s/^v//' | sed -e 's/-/./')
-MOBILEVERSION=$(grep MOBILE ../../cmake/Modules/version.cmake | cut -d\" -f 2)
-echo "#define GIT_VERSION_STRING \"$GITVERSION\"" > ssrf-version.h
-echo "#define CANONICAL_VERSION_STRING \"$CANONICALVERSION\"" >> ssrf-version.h
-echo "#define MOBILE_VERSION_STRING \"$MOBILEVERSION\"" >> ssrf-version.h
+GITVERSION=$(cd "$SUBSURFACE_SOURCE" ; git describe --abbrev=12)
+CANONICALVERSION=$(echo $GITVERSION | sed -e 's/-g.*$// ; s/^v//' | sed -e 's/-/./')
+MOBILEVERSION=$(grep MOBILE "$SUBSURFACE_SOURCE"/cmake/Modules/version.cmake | cut -d\" -f 2)
+echo "#define GIT_VERSION_STRING \"$GITVERSION\"" > "$SUBSURFACE_SOURCE"/ssrf-version.h
+echo "#define CANONICAL_VERSION_STRING \"$CANONICALVERSION\"" >> "$SUBSURFACE_SOURCE"/ssrf-version.h
+echo "#define MOBILE_VERSION_STRING \"$MOBILEVERSION\"" >> "$SUBSURFACE_SOURCE"/ssrf-version.h
 
 BUNDLE=org.subsurface-divelog.subsurface-mobile
 if [ "${IOS_BUNDLE_PRODUCT_IDENTIFIER}" != "" ] ; then
 	BUNDLE=${IOS_BUNDLE_PRODUCT_IDENTIFIER}
 fi
 
+pushd "$SUBSURFACE_SOURCE"/packaging/ios
 # create Info.plist with the correct versions
 cat Info.plist.in | sed "s/@MOBILE_VERSION@/$MOBILEVERSION/;s/@CANONICAL_VERSION@/$CANONICALVERSION/;s/@PRODUCT_BUNDLE_IDENTIFIER@/$BUNDLE/" > Info.plist
 
+popd
 if [ "$versionOnly" = "1" ] ; then
 	exit 0
 fi
@@ -87,7 +86,7 @@ popd
 # now build all the dependencies for the three relevant architectures (x86_64 is for the simulator)
 
 # get all 3rd part libraries
-../../scripts/get-dep-lib.sh ios "$PARENT_DIR"
+"$SUBSURFACE_SOURCE"/scripts/get-dep-lib.sh ios "$PARENT_DIR"
 
 for ARCH in $ARCHS; do
 
@@ -102,12 +101,12 @@ for ARCH in $ARCHS; do
 
 	if [ "$ARCH" = "x86_64" ] ; then
 		declare -x SDK_NAME="iphonesimulator"
-		declare -x TOOLCHAIN_FILE="${TOP}/iPhoneSimulatorCMakeToolchain"
+		declare -x TOOLCHAIN_FILE="$SUBSURFACE_SOURCE/packaging/ios/iPhoneSimulatorCMakeToolchain"
 		declare -x IOS_PLATFORM=SIMULATOR64
 		declare -x BUILDCHAIN=x86_64-apple-darwin
 	else
 		declare -x SDK_NAME="iphoneos"
-		declare -x TOOLCHAIN_FILE="${TOP}/iPhoneDeviceCMakeToolchain"
+		declare -x TOOLCHAIN_FILE="$SUBSURFACE_SOURCE/packaging/ios/iPhoneDeviceCMakeToolchain"
 		declare -x IOS_PLATFORM=OS
 		declare -x BUILDCHAIN=arm-apple-darwin
 	fi
@@ -119,10 +118,9 @@ for ARCH in $ARCHS; do
 	declare -x CC=$(xcrun -sdk $SDK_NAME -find clang)
 	declare -x CXX=$(xcrun -sdk $SDK_NAME -find clang++)
 	declare -x LD=$(xcrun -sdk $SDK_NAME -find ld)
-	declare -x CFLAGS="-arch $ARCH_NAME -isysroot $SDK_DIR -miphoneos-version-min=6.0 -I$SDK_DIR/usr/include -fembed-bitcode"
+	declare -x CFLAGS="-arch $ARCH_NAME -isysroot $SDK_DIR -miphoneos-version-min=10.0 -I$SDK_DIR/usr/include -fembed-bitcode"
 	declare -x CXXFLAGS="$CFLAGS"
 	declare -x LDFLAGS="$CFLAGS -lsqlite3 -lpthread -lc++ -L$SDK_DIR/usr/lib -fembed-bitcode"
-
 
 	# openssl build stuff.
 	export DEVELOPER=$(xcode-select --print-path)\
@@ -209,7 +207,7 @@ for ARCH in $ARCHS; do
 			-DCURL=OFF \
 			-DUSE_SSH=OFF \
 			"$PARENT_DIR"/libgit2/
-		sed -i.bak 's/C_FLAGS = /C_FLAGS = -Wno-nullability-completeness -Wno-expansion-to-defined /' CMakeFiles/git2.dir/flags.make
+		sed -i.bak 's/C_FLAGS = /C_FLAGS = -Wno-nullability-completeness -Wno-expansion-to-defined /' src/CMakeFiles/git2.dir/flags.make
 		make
 		make install
 		# Patch away pkg-config dependency to zlib, its there, i promise
@@ -218,14 +216,14 @@ for ARCH in $ARCHS; do
 	fi
 
 # build libdivecomputer
-	if [ ! -d ../../libdivecomputer/src ] ; then
-		pushd ../..
+	if [ ! -d "$SUBSURFACE_SOURCE"/libdivecomputer/src ] ; then
+		pushd "$SUBSURFACE_SOURCE"
 		git submodule init
 		git submodule update --recursive
 		popd
 	fi
-	if [ ! -f ../../libdivecomputer/configure ] ; then
-		pushd ../../libdivecomputer
+	if [ ! -f "$SUBSURFACE_SOURCE"/libdivecomputer/configure ] ; then
+		pushd "$SUBSURFACE_SOURCE"/libdivecomputer
 		autoreconf --install
 		autoreconf --install
 		popd
@@ -234,7 +232,7 @@ for ARCH in $ARCHS; do
 	if [ ! -f "$PARENT_DIR"/libdivecomputer-build-$ARCH/git.SHA ] ; then
 		echo "" > "$PARENT_DIR"/libdivecomputer-build-$ARCH/git.SHA
 	fi
-	CURRENT_SHA=$(cd ../../libdivecomputer ; git describe)
+	CURRENT_SHA=$(cd "$SUBSURFACE_SOURCE"/libdivecomputer ; git describe)
 	PREVIOUS_SHA=$(cat "$PARENT_DIR"/libdivecomputer-build-$ARCH/git.SHA)
 	if [ ! "$CURRENT_SHA" = "$PREVIOUS_SHA" ] ; then
 		echo $CURRENT_SHA > "$PARENT_DIR"/libdivecomputer-build-$ARCH/git.SHA
@@ -248,8 +246,8 @@ for ARCH in $ARCHS; do
 done
 
 # build googlemaps
-mkdir -p "$PARENT_DIR"/googlemaps/build-ios
-pushd "$PARENT_DIR"/googlemaps/build-ios
+mkdir -p "$PARENT_DIR"/googlemaps-build
+pushd "$PARENT_DIR"/googlemaps-build
 "$IOS_QT"/"$QT_VERSION"/ios/bin/qmake "$PARENT_DIR"/googlemaps/googlemaps.pro CONFIG+=release
 make
 if [ "$DEBUGRELEASE" != "Release" ] ; then
@@ -259,13 +257,33 @@ if [ "$DEBUGRELEASE" != "Release" ] ; then
 fi
 popd
 
+# build Kirigami
+mkdir -p "$PARENT_DIR"/kirigami-build
+pushd "$PARENT_DIR"/kirigami-build
+"$IOS_QT"/"$QT_VERSION"/ios/bin/qmake "$SUBSURFACE_SOURCE"/mobile-widgets/3rdparty/kirigami/kirigami.pro CONFIG+=release
+make
+#make install
+if [ "$DEBUGRELEASE" != "Release" ] ; then
+	"$IOS_QT"/"$QT_VERSION"/ios/bin/qmake "$SUBSURFACE_SOURCE"/mobile-widgets/3rdparty/kirigami/kirigami.pro CONFIG+=debug
+	make clean
+	make
+	#make install
+fi
+# since the install prefix for qmake is rather weirdly implemented, let's copy things by hand into the multiarch destination
+mkdir -p "$INSTALL_ROOT"/../lib/qml/
+cp -a org "$INSTALL_ROOT"/../lib/qml/
+popd
+
 # now combine the libraries into fat libraries
 ARCH_ROOT=$PARENT_DIR/install-root/ios
 cp -a "$ARCH_ROOT"/x86_64/* "$ARCH_ROOT"
 if [ "$TARGET" = "iphoneos" ] ; then
 	pushd "$ARCH_ROOT"/lib
 	for LIB in $(find . -type f -name \*.a); do
-		lipo "$ARCH_ROOT"/armv7/lib/"$LIB" "$ARCH_ROOT"/arm64/lib/"$LIB" "$ARCH_ROOT"/x86_64/lib/"$LIB" -create -output "$LIB"
+		# libkirigamiplugin is already a fat library
+		if grep -v -q "kirigami" <<< "$LIB" ; then
+			lipo "$ARCH_ROOT"/armv7/lib/"$LIB" "$ARCH_ROOT"/arm64/lib/"$LIB" "$ARCH_ROOT"/x86_64/lib/"$LIB" -create -output "$LIB"
+		fi
 	done
 	popd
 fi
@@ -273,9 +291,9 @@ fi
 pushd "$SUBSURFACE_SOURCE"/translations
 SRCS=$(ls ./*.ts | grep -v source)
 popd
-mkdir -p build-ios/translations
+mkdir -p "$SUBSURFACE_SOURCE"/packaging/ios/build-ios/translations
 for src in $SRCS; do
-	"$IOS_QT"/"$QT_VERSION"/ios/bin/lrelease "$SUBSURFACE_SOURCE"/translations/"$src" -qm build-ios/translations/"${src/.ts/.qm}"
+	"$IOS_QT"/"$QT_VERSION"/ios/bin/lrelease "$SUBSURFACE_SOURCE"/translations/"$src" -qm "$SUBSURFACE_SOURCE"/packaging/ios/build-ios/translations/"${src/.ts/.qm}"
 done
 
 # in order to be able to use xcode without going through Qt Creator
@@ -293,10 +311,13 @@ for BUILD_NOW in $BUILD_LOOP; do
 	else
 		DRCONFIG="release"
 	fi
+	cd "$PARENT_DIR"
 	BUILDX=build-Subsurface-mobile-Qt_$(echo "$QT_VERSION" | tr .  _)_for_iOS-"$BUILD_NOW"
 	mkdir -p "$BUILDX"
 	pushd "$BUILDX"
-	"$IOS_QT"/"$QT_VERSION"/ios/bin/qmake ../Subsurface-mobile.pro \
+	rm -f ssrf-version.h
+	ln -s "$SUBSURFACE_SOURCE"/ssrf-version.h .
+	"$IOS_QT"/"$QT_VERSION"/ios/bin/qmake "$SUBSURFACE_SOURCE"/Subsurface-mobile.pro \
 		-spec macx-ios-clang CONFIG+=$TARGET CONFIG+=$TARGET2 CONFIG+=$DRCONFIG
 
 	make 

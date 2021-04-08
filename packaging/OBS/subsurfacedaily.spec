@@ -4,9 +4,9 @@
 # Copyright (c) 2014-2020 Dirk Hohndel
 #
 
-%define latestVersion 4.9.3.1464
+%define latestVersion 4.9.10.166
 
-%define gitVersion 1464
+%define gitVersion 166
 
 
 Name:           subsurfacedaily
@@ -29,7 +29,7 @@ BuildRequires:	libtool
 BuildRequires:	cmake
 %if 0%{?suse_version}
 # kde4-filesystem needed for some folders not owned (% {_datadir}/icons/hicolor and others)
-BuildRequires:  kde4-filesystem
+BuildRequires:  kf5-filesystem
 %endif
 BuildRequires:	libzip-devel
 BuildRequires:	libxml2-devel
@@ -37,12 +37,13 @@ BuildRequires:	libxslt-devel
 BuildRequires:	libssh2-devel
 BuildRequires:	libcurl-devel
 BuildRequires:  libgit2-devel
-BuildRequires:	grantlee5-devel
+BuildRequires:  libmtp-devel
 %if  0%{?fedora_version} || 0%{?rhel_version} || 0%{?centos_version}
 BuildRequires:	netpbm-devel
 BuildRequires:	openssl-devel
 BuildRequires:	libsqlite3x-devel
 BuildRequires:	libusbx-devel
+BuildRequires:	bluez-libs-devel
 BuildRequires:	qt5-qtbase-devel
 BuildRequires:	qt5-qttools-devel
 BuildRequires:	qt5-qtwebkit-devel
@@ -62,6 +63,7 @@ BuildRequires:	update-desktop-files
 BuildRequires:	libopenssl-devel
 BuildRequires:	sqlite3-devel
 BuildRequires:	libusb-1_0-devel
+BuildRequires:	bluez-devel
 BuildRequires:	libqt5-qtbase-devel
 BuildRequires:	libqt5-qtsvg-devel
 BuildRequires:	libqt5-linguist
@@ -83,7 +85,7 @@ Recommends:     libqt5-qttranslations
 Recommends:     qt5-qttranslations
 %endif
 # Recommends debug info (and debug sources, for openSUSE) for daily build
-%if %{name} == "subsurfacedaily"
+%if "%{name}" == "subsurfacedaily"
 Recommends:     %{name}-debuginfo
 %if 0%{?suse_version}
 Recommends:     %{name}-debugsource

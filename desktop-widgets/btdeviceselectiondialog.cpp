@@ -179,7 +179,7 @@ void BtDeviceSelectionDialog::addRemoteDevice(const QBluetoothDeviceInfo &remote
 	// On Windows we cannot obtain the pairing status so we set only the name and the address of the device
 	QString deviceLabel = QString("%1 (%2)").arg(remoteDeviceInfo.name(),
 						     remoteDeviceInfo.address().toString());
-	QColor pairingColor = QColor(Qt::white);
+	QColor pairingColor = QColor(Qt::gray);
 #else
 	// By default we use the status label and the color for the UNPAIRED state
 	QColor pairingColor = QColor("#F1A9A0");
@@ -202,7 +202,7 @@ void BtDeviceSelectionDialog::addRemoteDevice(const QBluetoothDeviceInfo &remote
 	if (!remoteDeviceInfo.deviceUuid().isNull()) {
 		// we have only a Uuid, no address, so show that and reset the pairing color
 		deviceLabel = QString("%1 (%2)").arg(remoteDeviceInfo.name(),remoteDeviceInfo.deviceUuid().toString());
-		pairingColor = QColor(Qt::white);
+		pairingColor =  QColor(Qt::gray);
 	} else
 #endif
 	deviceLabel = tr("%1 (%2)   [State: %3]").arg(remoteDeviceInfo.name(),
@@ -235,9 +235,12 @@ void BtDeviceSelectionDialog::currentItemChanged(QListWidgetItem *item, QListWid
 	bool enableSaveButton = true;
 
 #if !defined(Q_OS_WIN)
-	// On other platforms than Windows we can obtain the pairing status so if the devices are not paired we disable the button
-	// except on MacOS for those devices that only give us a Uuid and not and address (as we have no pairing status for those, either)
-	if (!remoteDeviceInfo.address().isNull()) {
+	// On platforms other than Windows we can obtain the pairing status so if the devices are non-BLE devices
+	// and not paired we disable the button
+	// on MacOS some devices (including all BLE devices) only give us a Uuid and not and address; for those
+	// we have no pairing status, either
+	if (!remoteDeviceInfo.address().isNull() &&
+	    remoteDeviceInfo.coreConfigurations() != QBluetoothDeviceInfo::LowEnergyCoreConfiguration) {
 		QBluetoothLocalDevice::Pairing pairingStatus = localDevice->pairingStatus(remoteDeviceInfo.address());
 
 		if (pairingStatus == QBluetoothLocalDevice::Unpaired) {

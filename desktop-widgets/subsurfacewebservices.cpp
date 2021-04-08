@@ -5,6 +5,7 @@
 #include "core/settings/qPrefCloudStorage.h"
 #include "desktop-widgets/mainwindow.h"
 #include "commands/command.h"
+#include "core/device.h"
 #include "core/divesite.h"
 #include "core/trip.h"
 #include "core/errorhelper.h"
@@ -38,7 +39,7 @@
 #define PATH_MAX 4096
 #endif
 
-WebServices::WebServices(QWidget *parent, Qt::WindowFlags f) : QDialog(parent, f), reply(0)
+WebServices::WebServices(QWidget *parent) : QDialog(parent, QFlag(0)), reply(0)
 {
 	ui.setupUi(this);
 	connect(ui.buttonBox, SIGNAL(clicked(QAbstractButton *)), this, SLOT(buttonClicked(QAbstractButton *)));
@@ -251,7 +252,7 @@ void DivelogsDeWebServices::prepareDivesForUpload(bool selected)
 	exec();
 }
 
-DivelogsDeWebServices::DivelogsDeWebServices(QWidget *parent, Qt::WindowFlags f) : WebServices(parent, f),
+DivelogsDeWebServices::DivelogsDeWebServices(QWidget *parent) : WebServices(parent),
 	uploadMode(false)
 {
 	// should DivelogDE user and pass be stored in the prefs struct or something?
@@ -456,8 +457,10 @@ void DivelogsDeWebServices::buttonClicked(QAbstractButton *button)
 		struct dive_table table = empty_dive_table;
 		struct trip_table trips = empty_trip_table;
 		struct dive_site_table sites = empty_dive_site_table;
-		parse_file(QFile::encodeName(zipFile.fileName()), &table, &trips, &sites);
-		Command::importDives(&table, &trips, &sites, IMPORT_MERGE_ALL_TRIPS, QStringLiteral("divelogs.de"));
+		struct device_table devices;
+		struct filter_preset_table filter_presets;
+		parse_file(QFile::encodeName(zipFile.fileName()), &table, &trips, &sites, &devices, &filter_presets);
+		Command::importDives(&table, &trips, &sites, &devices, nullptr, IMPORT_MERGE_ALL_TRIPS, QStringLiteral("divelogs.de"));
 
 		/* store last entered user/pass in config */
 		qPrefCloudStorage::set_divelogde_user(ui.userID->text());

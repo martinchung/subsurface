@@ -20,7 +20,7 @@ class DiveCartesianAxis : public QObject, public QGraphicsLineItem {
 	Q_PROPERTY(qreal y WRITE setY READ y)
 private:
 	bool printMode;
-	QPen gridPen();
+	QPen gridPen() const;
 public:
 	enum Orientation {
 		TopToBottom,
@@ -41,7 +41,7 @@ public:
 	double maximum() const;
 	double fontLabelScale() const;
 	qreal valueAt(const QPointF &p) const;
-	qreal posAtValue(qreal value);
+	qreal posAtValue(qreal value) const;
 	void setColor(const QColor &color);
 	void setTextColor(const QColor &color);
 	void animateChangeLine(const QLineF &newLine);
@@ -50,8 +50,6 @@ public:
 	void setLineSize(qreal lineSize);
 	void setLine(const QLineF& line);
 	int unitSystem;
-public
-slots:
 	virtual void updateTicks(color_index_t color = TIME_GRID);
 
 signals:
@@ -60,8 +58,8 @@ signals:
 
 protected:
 	ProfileWidget2 *profileWidget;
-	virtual QString textForValue(double value);
-	virtual QColor colorForValue(double value);
+	virtual QString textForValue(double value) const;
+	virtual QColor colorForValue(double value) const;
 	Orientation orientation;
 	QList<DiveTextItem *> labels;
 	QList<DiveLineItem *> lines;
@@ -82,8 +80,9 @@ class DepthAxis : public DiveCartesianAxis {
 public:
 	DepthAxis(ProfileWidget2 *widget);
 private:
-	QString textForValue(double value);
-	QColor colorForValue(double value);
+	QString textForValue(double value) const override;
+	QColor colorForValue(double value) const override;
+	int unitSystem;
 private
 slots:
 	void settingsChanged();
@@ -93,10 +92,10 @@ class TimeAxis : public DiveCartesianAxis {
 	Q_OBJECT
 public:
 	TimeAxis(ProfileWidget2 *widget);
-	void updateTicks(color_index_t color = TIME_GRID);
+	void updateTicks(color_index_t color = TIME_GRID) override;
 private:
-	QString textForValue(double value);
-	QColor colorForValue(double value);
+	QString textForValue(double value) const override;
+	QColor colorForValue(double value) const override;
 };
 
 class TemperatureAxis : public DiveCartesianAxis {
@@ -104,19 +103,18 @@ class TemperatureAxis : public DiveCartesianAxis {
 public:
 	TemperatureAxis(ProfileWidget2 *widget);
 private:
-	QString textForValue(double value);
+	QString textForValue(double value) const override;
 };
 
 class PartialGasPressureAxis : public DiveCartesianAxis {
 	Q_OBJECT
 public:
-	PartialGasPressureAxis(ProfileWidget2 *widget);
-	void setModel(DivePlotDataModel *model);
+	PartialGasPressureAxis(const DivePlotDataModel &model, ProfileWidget2 *widget);
 public
 slots:
-	void settingsChanged();
+	void update();
 private:
-	DivePlotDataModel *model;
+	const DivePlotDataModel &model;
 };
 
 #endif // DIVECARTESIANAXIS_H

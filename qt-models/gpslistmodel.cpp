@@ -11,7 +11,10 @@ GpsListModel::GpsListModel()
 
 void GpsListModel::update()
 {
-	QVector<gpsTracker> trackers = QVector<gpsTracker>::fromList(GpsLocation::instance()->currentGPSInfo().values());
+	GpsLocation *glp = GpsLocation::instance();
+	if (!glp)
+		return;
+	QVector<gpsTracker> trackers = QVector<gpsTracker>::fromList(glp->currentGPSInfo().values());
 	beginResetModel();
 	m_gpsFixes = trackers;
 	endResetModel();
@@ -67,4 +70,3 @@ GpsListModel *GpsListModel::instance()
 	static GpsListModel self;
 	return &self;
 }
-

@@ -7,18 +7,18 @@
 #include "device.h"
 #include "divesite.h"
 #include "dive.h"
+#include "event.h"
+#include "filterpreset.h"
 #include "fulltext.h"
+#include "interpolate.h"
 #include "planner.h"
 #include "qthelper.h"
 #include "gettext.h"
 #include "git-access.h"
 #include "selection.h"
+#include "sample.h"
 #include "table.h"
 #include "trip.h"
-
-/* This flag is set to true by operations that are not implemented in the
- * undo system. It is therefore only cleared on save and load. */
-static bool dive_list_changed = false;
 
 bool autogroup = false;
 
@@ -104,17 +104,26 @@ static int calculate_otu(const struct dive *dive)
 		struct sample *sample = dc->sample + i;
 		struct sample *psample = sample - 1;
 		t = sample->time.seconds - psample->time.seconds;
-		if (sample->o2sensor[0].mbar) {			// if dive computer has o2 sensor(s) (CCR & PSCR) ..
+		if ((dc->divemode == CCR || dc->divemode == PSCR) && sample->o2sensor[0].mbar) {	// if dive computer has o2 sensor(s) (CCR & PSCR) ..
 			po2i = psample->o2sensor[0].mbar;
 			po2f = sample->o2sensor[0].mbar;	// ... use data from the first o2 sensor
 		} else {
 			if (dc->divemode == CCR) {
-				po2i = psample->setpoint.mbar;		// if CCR has no o2 sensors then use setpoint
-				po2f = sample->setpoint.mbar;
+				po2i = MIN((int) psample->setpoint.mbar,
+					   depth_to_mbar(psample->depth.mm, dive));		// if CCR has no o2 sensors then use setpoint
+				po2f = MIN((int) sample->setpoint.mbar,
+					   depth_to_mbar(sample->depth.mm, dive));
 			} else {						// For OC and rebreather without o2 sensor/setpoint
-				int o2 = active_o2(dive, dc, psample->time);	// 	... calculate po2 from depth and FiO2.
-				po2i = lrint(o2 * depth_to_atm(psample->depth.mm, dive));	// (initial) po2 at start of segment
-				po2f = lrint(o2 * depth_to_atm(sample->depth.mm, dive));	// (final) po2 at end of segment
+				double amb_presure = depth_to_bar(sample->depth.mm, dive);
+				double pamb_pressure = depth_to_bar(psample->depth.mm , dive);
+				if (dc->divemode == PSCR) {
+					po2i = pscr_o2(pamb_pressure, get_gasmix_at_time(dive, dc, psample->time));
+					po2f = pscr_o2(amb_presure, get_gasmix_at_time(dive, dc, sample->time));
+				} else {
+					int o2 = active_o2(dive, dc, psample->time);	// 	... calculate po2 from depth and FiO2.
+					po2i = lrint(o2 * pamb_pressure);	// (initial) po2 at start of segment
+					po2f = lrint(o2 * amb_presure);	// (final) po2 at end of segment
+				}
 			}
 		}
 		if ((po2i > 500) || (po2f > 500)) {			// If PO2 in segment is above 500 mbar then calculate otu
@@ -158,28 +167,37 @@ static double calculate_cns_dive(const struct dive *dive)
 		struct sample *sample = dc->sample + n;
 		struct sample *psample = sample - 1;
 		t = sample->time.seconds - psample->time.seconds;
-		if (sample->o2sensor[0].mbar) {			// if dive computer has o2 sensor(s) (CCR & PSCR)
+		if ((dc->divemode == CCR || dc->divemode == PSCR) && sample->o2sensor[0].mbar) {			// if dive computer has o2 sensor(s) (CCR & PSCR)
 			po2i = psample->o2sensor[0].mbar;
 			po2f = sample->o2sensor[0].mbar;	// then use data from the first o2 sensor
 			trueo2 = true;
 		}
 		if ((dc->divemode == CCR) && (!trueo2)) {
-			po2i = psample->setpoint.mbar;		// if CCR has no o2 sensors then use setpoint
-			po2f = sample->setpoint.mbar;
+			po2i = MIN((int) psample->setpoint.mbar,
+				   depth_to_mbar(psample->depth.mm, dive));		// if CCR has no o2 sensors then use setpoint
+			po2f = MIN((int) sample->setpoint.mbar,
+				   depth_to_mbar(sample->depth.mm, dive));
 			trueo2 = true;
 		}
 		if (!trueo2) {
-			int o2 = active_o2(dive, dc, psample->time);			// For OC and rebreather without o2 sensor:
-			po2i = lrint(o2 * depth_to_atm(psample->depth.mm, dive));	// (initial) po2 at start of segment
-			po2f = lrint(o2 * depth_to_atm(sample->depth.mm, dive));	// (final) po2 at end of segment
+			double amb_presure = depth_to_bar(sample->depth.mm, dive);
+			double pamb_pressure = depth_to_bar(psample->depth.mm , dive);
+			if (dc->divemode == PSCR) {
+				po2i = pscr_o2(pamb_pressure, get_gasmix_at_time(dive, dc, psample->time));
+				po2f = pscr_o2(amb_presure, get_gasmix_at_time(dive, dc, sample->time));
+			} else {
+				int o2 = active_o2(dive, dc, psample->time);	// 	... calculate po2 from depth and FiO2.
+				po2i = lrint(o2 * pamb_pressure);	// (initial) po2 at start of segment
+				po2f = lrint(o2 * amb_presure);	// (final) po2 at end of segment
+			}
 		}
-		po2i = (po2i + po2f) / 2;	// po2i now holds the mean po2 of initial and final po2 values of segment.
+		int po2avg = (po2i + po2f) / 2;	// po2i now holds the mean po2 of initial and final po2 values of segment.
 		/* Don't increase CNS when po2 below 500 matm */
-		if (po2i <= 500)
+		if (po2avg <= 500)
 			continue;
 
 		// This formula is the result of fitting two lines to the Log of the NOAA CNS table
-		rate = po2i <= 1500 ? exp(-11.7853 + 0.00193873 * po2i) : exp(-23.6349 + 0.00980829 * po2i);
+		rate = po2i <= 1500 ? exp(-11.7853 + 0.00193873 * po2avg) : exp(-23.6349 + 0.00980829 * po2avg);
 		cns += (double) t * rate * 100.0;
 	}
 	return cns;
@@ -372,7 +390,7 @@ static int calculate_sac(const struct dive *dive)
 }
 
 /* for now we do this based on the first divecomputer */
-static void add_dive_to_deco(struct deco_state *ds, struct dive *dive)
+static void add_dive_to_deco(struct deco_state *ds, struct dive *dive, bool in_planner)
 {
 	struct divecomputer *dc = &dive->dc;
 	struct gasmix gasmix = gasmix_air;
@@ -394,7 +412,8 @@ static void add_dive_to_deco(struct deco_state *ds, struct dive *dive)
 			int depth = interpolate(psample->depth.mm, sample->depth.mm, j - t0, t1 - t0);
 			gasmix = get_gasmix(dive, dc, j, &ev, gasmix);
 			add_segment(ds, depth_to_bar(depth, dive), gasmix, 1, sample->setpoint.mbar,
-				get_current_divemode(&dive->dc, j, &evd, &current_divemode), dive->sac);
+				    get_current_divemode(&dive->dc, j, &evd, &current_divemode), dive->sac,
+				    in_planner);
 		}
 	}
 }
@@ -419,7 +438,7 @@ static struct gasmix air = { .o2.permille = O2_IN_AIR, .he.permille = 0 };
 /* return negative surface time if dives are overlapping */
 /* The place you call this function is likely the place where you want
  * to create the deco_state */
-int init_decompression(struct deco_state *ds, struct dive *dive)
+int init_decompression(struct deco_state *ds, const struct dive *dive, bool in_planner)
 {
 	int i, divenr = -1;
 	int surface_time = 48 * 60 * 60;
@@ -520,7 +539,7 @@ int init_decompression(struct deco_state *ds, struct dive *dive)
 #if DECO_CALC_DEBUG & 2
 			printf("Init deco\n");
 #endif
-			clear_deco(ds, surface_pressure);
+			clear_deco(ds, surface_pressure, in_planner);
 			deco_init = true;
 #if DECO_CALC_DEBUG & 2
 			printf("Tissues after init:\n");
@@ -534,14 +553,14 @@ int init_decompression(struct deco_state *ds, struct dive *dive)
 #endif
 				return surface_time;
 			}
-			add_segment(ds, surface_pressure, air, surface_time, 0, dive->dc.divemode, prefs.decosac);
+			add_segment(ds, surface_pressure, air, surface_time, 0, dive->dc.divemode, prefs.decosac, in_planner);
 #if DECO_CALC_DEBUG & 2
 			printf("Tissues after surface intervall of %d:%02u:\n", FRACTION(surface_time, 60));
 			dump_tissues(ds);
 #endif
 		}
 
-		add_dive_to_deco(ds, pdive);
+		add_dive_to_deco(ds, pdive, in_planner);
 
 		last_starttime = pdive->when;
 		last_endtime = dive_endtime(pdive);
@@ -558,7 +577,7 @@ int init_decompression(struct deco_state *ds, struct dive *dive)
 #if DECO_CALC_DEBUG & 2
 		printf("Init deco\n");
 #endif
-		clear_deco(ds, surface_pressure);
+		clear_deco(ds, surface_pressure, in_planner);
 #if DECO_CALC_DEBUG & 2
 		printf("Tissues after no previous dive, surface time set to 48h:\n");
 		dump_tissues(ds);
@@ -571,7 +590,7 @@ int init_decompression(struct deco_state *ds, struct dive *dive)
 #endif
 			return surface_time;
 		}
-		add_segment(ds, surface_pressure, air, surface_time, 0, dive->dc.divemode, prefs.decosac);
+		add_segment(ds, surface_pressure, air, surface_time, 0, dive->dc.divemode, prefs.decosac, in_planner);
 #if DECO_CALC_DEBUG & 2
 		printf("Tissues after surface intervall of %d:%02u:\n", FRACTION(surface_time, 60));
 		dump_tissues(ds);
@@ -579,7 +598,7 @@ int init_decompression(struct deco_state *ds, struct dive *dive)
 	}
 
 	// I do not dare to remove this call. We don't need the result but it might have side effects. Bummer.
-	tissue_tolerance_calc(ds, dive, surface_pressure);
+	tissue_tolerance_calc(ds, dive, surface_pressure, in_planner);
 	return surface_time;
 }
 
@@ -786,47 +805,14 @@ void delete_single_dive(int idx)
 	delete_dive_from_table(&dive_table, idx);
 }
 
-int shown_dives = 0;
-bool filter_dive(struct dive *d, bool shown)
-{
-	bool old_shown, changed;
-	if (!d)
-		return false;
-	old_shown = !d->hidden_by_filter;
-	d->hidden_by_filter = !shown;
-	if (!shown && d->selected)
-		deselect_dive(d);
-	changed = old_shown != shown;
-	if (changed)
-		shown_dives += shown - old_shown;
-	return changed;
-}
-
-void mark_divelist_changed(bool changed)
-{
-	if (dive_list_changed == changed)
-		return;
-	dive_list_changed = changed;
-	updateWindowTitle();
-}
-
-int unsaved_changes()
-{
-	return dive_list_changed;
-}
-
 void process_loaded_dives()
 {
 	int i;
 	struct dive *dive;
 
-	/* Register dive computer nick names and count shown dives. */
-	shown_dives = 0;
-	for_each_dive(i, dive) {
-		if (!dive->hidden_by_filter)
-			shown_dives++;
-		set_dc_nickname(dive);
-	}
+	/* Register dive computer nick names. */
+	for_each_dive(i, dive)
+		add_devices_of_dive(dive, &device_table);
 
 	sort_dive_table(&dive_table);
 	sort_trip_table(&trip_table);
@@ -838,6 +824,9 @@ void process_loaded_dives()
 
 	/* Inform frontend of reset data. This should reset all the models. */
 	emit_reset_signal();
+
+	/* Now that everything is settled, select the newest dive. */
+	select_newest_visible_dive();
 }
 
 /*
@@ -870,6 +859,10 @@ static void merge_imported_dives(struct dive_table *table)
 			merged->dive_site = NULL;
 			add_dive_to_dive_site(merged, ds);
 		}
+		unregister_dive_from_dive_site(prev);
+		unregister_dive_from_dive_site(dive);
+		unregister_dive_from_trip(prev);
+		unregister_dive_from_trip(dive);
 
 		/* Overwrite the first of the two dives and remove the second */
 		free_dive(prev);
@@ -998,18 +991,22 @@ static bool merge_dive_tables(struct dive_table *dives_from, struct dive_table *
 /* Merge the dives of the trip "from" and the dive_table "dives_from" into the trip "to"
  * and dive_table "dives_to". If "prefer_imported" is true, dive data of "from" takes
  * precedence */
-void add_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table, struct dive_site_table *import_sites_table, int flags)
+void add_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table,
+			struct dive_site_table *import_sites_table, struct device_table *import_device_table,
+			int flags)
 {
 	int i, idx;
 	struct dive_table dives_to_add = empty_dive_table;
 	struct dive_table dives_to_remove = empty_dive_table;
 	struct trip_table trips_to_add = empty_trip_table;
 	struct dive_site_table dive_sites_to_add = empty_dive_site_table;
+	struct device_table *devices_to_add = alloc_device_table();
 
 	/* Process imported dives and generate lists of dives
 	 * to-be-added and to-be-removed */
-	process_imported_dives(import_table, import_trip_table, import_sites_table, flags,
-			       &dives_to_add, &dives_to_remove, &trips_to_add, &dive_sites_to_add);
+	process_imported_dives(import_table, import_trip_table, import_sites_table, import_device_table,
+			       flags, &dives_to_add, &dives_to_remove, &trips_to_add,
+			       &dive_sites_to_add, devices_to_add);
 
 	/* Add new dives to trip and site to get reference count correct. */
 	for (i = 0; i < dives_to_add.nr; i++) {
@@ -1044,10 +1041,17 @@ void add_imported_dives(struct dive_table *import_table, struct trip_table *impo
 		register_dive_site(dive_sites_to_add.dive_sites[i]);
 	dive_sites_to_add.nr = 0;
 
+	/* Add new devices */
+	for (i = 0; i < nr_devices(devices_to_add); i++) {
+		const struct device *dev = get_device(devices_to_add, i);
+		add_to_device_table(&device_table, dev);
+	}
+
 	/* We might have deleted the old selected dive.
 	 * Choose the newest dive as selected (if any) */
 	current_dive = dive_table.nr > 0 ? dive_table.dives[dive_table.nr - 1] : NULL;
-	mark_divelist_changed(true);
+
+	free_device_table(devices_to_add);
 
 	/* Inform frontend of reset data. This should reset all the models. */
 	emit_reset_signal();
@@ -1087,11 +1091,12 @@ bool try_to_merge_trip(struct dive_trip *trip_import, struct dive_table *import_
 }
 
 /* Process imported dives: take a table of dives to be imported and
- * generate four lists:
+ * generate five lists:
  *	1) Dives to be added
  *	2) Dives to be removed
  *	3) Trips to be added
  *	4) Dive sites to be added
+ *	5) Devices to be added
  * The dives to be added are owning (i.e. the caller is responsible
  * for freeing them).
  * The dives, trips and sites in "import_table", "import_trip_table"
@@ -1119,16 +1124,18 @@ bool try_to_merge_trip(struct dive_trip *trip_import, struct dive_table *import_
  *   to a trip will be added to a newly generated trip.
  */
 void process_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table,
-			    struct dive_site_table *import_sites_table, int flags,
+			    struct dive_site_table *import_sites_table, struct device_table *import_device_table,
+			    int flags,
 			    /* output parameters: */
 			    struct dive_table *dives_to_add, struct dive_table *dives_to_remove,
-			    struct trip_table *trips_to_add, struct dive_site_table *sites_to_add)
+			    struct trip_table *trips_to_add, struct dive_site_table *sites_to_add,
+			    struct device_table *devices_to_add)
 {
 	int i, j, nr, start_renumbering_at = 0;
 	struct dive_trip *trip_import, *new_trip;
-	int preexisting;
 	bool sequence_changed = false;
 	bool new_dive_has_number = false;
+	bool last_old_dive_is_numbered;
 
 	/* If the caller didn't pass an import_trip_table because all
 	 * dives are tripless, provide a local table. This may be
@@ -1142,6 +1149,7 @@ void process_imported_dives(struct dive_table *import_table, struct trip_table *
 	clear_dive_table(dives_to_remove);
 	clear_trip_table(trips_to_add);
 	clear_dive_site_table(sites_to_add);
+	clear_device_table(devices_to_add);
 
 	/* Check if any of the new dives has a number. This will be
 	 * important later to decide if we want to renumber the added
@@ -1157,15 +1165,23 @@ void process_imported_dives(struct dive_table *import_table, struct trip_table *
 	if (!import_table->nr)
 		return;
 
+	/* Add only the devices that we don't know about yet. */
+	for (i = 0; i < nr_devices(import_device_table); i++) {
+		const struct device *dev = get_device(import_device_table, i);
+		if (!device_exists(&device_table, dev))
+			add_to_device_table(devices_to_add, dev);
+	}
+
 	/* check if we need a nickname for the divecomputer for newly downloaded dives;
 	 * since we know they all came from the same divecomputer we just check for the
 	 * first one */
-	if (flags & IMPORT_IS_DOWNLOADED)
-		set_dc_nickname(import_table->dives[0]);
-	else
+	if (flags & IMPORT_IS_DOWNLOADED) {
+		add_devices_of_dive(import_table->dives[0], devices_to_add);
+	} else {
 		/* they aren't downloaded, so record / check all new ones */
 		for (i = 0; i < import_table->nr; i++)
-			set_dc_nickname(import_table->dives[i]);
+			add_devices_of_dive(import_table->dives[i], devices_to_add);
+	}
 
 	/* Sort the table of dives to be imported and combine mergable dives */
 	sort_dive_table(import_table);
@@ -1175,8 +1191,6 @@ void process_imported_dives(struct dive_table *import_table, struct trip_table *
 	 * if tripless dives should be added to a new trip. */
 	if (!(flags & IMPORT_ADD_TO_NEW_TRIP))
 		autogroup_dives(import_table, import_trip_table);
-
-	preexisting = dive_table.nr; /* Remember old size for renumbering */
 
 	/* If dive sites already exist, use the existing versions. */
 	for (i = 0; i  < import_sites_table->nr; i++) {
@@ -1264,14 +1278,16 @@ void process_imported_dives(struct dive_table *import_table, struct trip_table *
 
 	/* If new dives were only added at the end, renumber the added dives.
 	 * But only if
-	 *	- The last dive in the old dive table had a number itself.
+	 *	- The last dive in the old dive table had a number itself (if there is a last dive).
 	 *	- None of the new dives has a number.
 	 */
-	nr = dive_table.nr > 0 ? dive_table.dives[dive_table.nr - 1]->number : 0;
+	last_old_dive_is_numbered = dive_table.nr == 0 || dive_table.dives[dive_table.nr - 1]->number > 0;
+
 	/* We counted the number of merged dives that were added to dives_to_add.
 	 * Skip those. Since sequence_changed is false all added dives are *after*
 	 * all merged dives. */
-	if (!sequence_changed && nr >= preexisting && !new_dive_has_number) {
+	if (!sequence_changed && last_old_dive_is_numbered && !new_dive_has_number) {
+		nr = dive_table.nr > 0 ? dive_table.dives[dive_table.nr - 1]->number : 0;
 		for (i = start_renumbering_at; i < dives_to_add->nr; i++)
 			dives_to_add->dives[i]->number = ++nr;
 	}
@@ -1360,12 +1376,11 @@ int get_dive_id_closest_to(timestamp_t when)
 void clear_dive_file_data()
 {
 	fulltext_unregister_all();
-	clear_selection();
+	select_single_dive(NULL);	// This is propagate up to the UI and clears all the information.
 
 	while (dive_table.nr)
 		delete_single_dive(0);
 	current_dive = NULL;
-	shown_dives = 0;
 	while (dive_site_table.nr)
 		delete_dive_site(get_dive_site(0, &dive_site_table), &dive_site_table);
 	if (trip_table.nr != 0) {
@@ -1374,11 +1389,14 @@ void clear_dive_file_data()
 	}
 
 	clear_dive(&displayed_dive);
-	clear_device_nodes();
+	clear_device_table(&device_table);
 	clear_events();
+	clear_filter_presets();
 
 	reset_min_datafile_version();
 	clear_git_id();
+
+	reset_tank_info_table(&tank_info_table);
 
 	/* Inform frontend of reset data. This should reset all the models. */
 	emit_reset_signal();

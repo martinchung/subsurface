@@ -1,29 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "printoptions.h"
 #include "templateedit.h"
+#include "templatelayout.h"
 #include "core/qthelper.h"
 
 #include <QDebug>
 #include <QFileDialog>
 #include <QMessageBox>
 
-PrintOptions::PrintOptions(QWidget *parent, struct print_options *printOpt, struct template_options *templateOpt)
+PrintOptions::PrintOptions(QWidget *parent, print_options &printOpt, template_options &templateOpt) :
+	printOptions(printOpt),
+	templateOptions(templateOpt)
 {
 	hasSetupSlots = false;
 	ui.setupUi(this);
 	if (parent)
 		setParent(parent);
-	if (!printOpt || !templateOpt)
-		return;
-	templateOptions = templateOpt;
-	printOptions = printOpt;
 	setup();
 }
 
 void PrintOptions::setup()
 {
 	// print type radio buttons
-	switch (printOptions->type) {
+	switch (printOptions.type) {
 	case print_options::DIVELIST:
 		ui.radioDiveListPrint->setChecked(true);
 		break;
@@ -35,8 +34,11 @@ void PrintOptions::setup()
 	setupTemplates();
 
 	// general print option checkboxes
-	ui.printInColor->setChecked(printOptions->color_selected);
-	ui.printSelected->setChecked(printOptions->print_selected);
+	ui.printInColor->setChecked(printOptions.color_selected);
+	ui.printSelected->setChecked(printOptions.print_selected);
+
+	// resolution
+	ui.resolution->setValue(printOptions.resolution);
 
 	// connect slots only once
 	if (hasSetupSlots)
@@ -44,18 +46,20 @@ void PrintOptions::setup()
 
 	connect(ui.printInColor, SIGNAL(clicked(bool)), this, SLOT(printInColorClicked(bool)));
 	connect(ui.printSelected, SIGNAL(clicked(bool)), this, SLOT(printSelectedClicked(bool)));
-
+	connect(ui.resolution, QOverload<int>::of(&QSpinBox::valueChanged), [this](int value) {
+		printOptions.resolution = value;
+	});
 	hasSetupSlots = true;
 }
 
 void PrintOptions::setupTemplates()
 {
-	QStringList currList = printOptions->type == print_options::DIVELIST ?
+	QStringList currList = printOptions.type == print_options::DIVELIST ?
 		grantlee_templates : grantlee_statistics_templates;
 
 	// temp. store the template from options, as addItem() updates it via:
 	// on_printTemplate_currentIndexChanged()
-	QString storedTemplate = printOptions->p_template;
+	QString storedTemplate = printOptions.p_template;
 	currList.sort();
 	int current_index = 0;
 	ui.printTemplate->clear();
@@ -73,7 +77,7 @@ void PrintOptions::setupTemplates()
 void PrintOptions::on_radioDiveListPrint_toggled(bool check)
 {
 	if (check) {
-		printOptions->type = print_options::DIVELIST;
+		printOptions.type = print_options::DIVELIST;
 
 		// print options
 		ui.printSelected->setEnabled(true);
@@ -90,7 +94,7 @@ void PrintOptions::on_radioDiveListPrint_toggled(bool check)
 void PrintOptions::on_radioStatisticsPrint_toggled(bool check)
 {
 	if (check) {
-		printOptions->type = print_options::STATISTICS;
+		printOptions.type = print_options::STATISTICS;
 
 		// print options
 		ui.printSelected->setEnabled(false);
@@ -107,24 +111,24 @@ void PrintOptions::on_radioStatisticsPrint_toggled(bool check)
 // general print option checkboxes
 void PrintOptions::printInColorClicked(bool check)
 {
-	printOptions->color_selected = check;
+	printOptions.color_selected = check;
 }
 
 void PrintOptions::printSelectedClicked(bool check)
 {
-	printOptions->print_selected = check;
+	printOptions.print_selected = check;
 }
 
 
 void PrintOptions::on_printTemplate_currentIndexChanged(int index)
 {
-	printOptions->p_template = ui.printTemplate->itemData(index).toString();
+	printOptions.p_template = ui.printTemplate->itemData(index).toString();
 }
 
 void PrintOptions::on_editButton_clicked()
 {
 	QString templateName = getSelectedTemplate();
-	QString prefix = (printOptions->type == print_options::STATISTICS) ? "statistics/" : "";
+	QString prefix = (printOptions.type == print_options::STATISTICS) ? "statistics/" : "";
 	QFile f(getPrintingTemplatePathUser() + QDir::separator() + prefix + templateName);
 	if (!f.open(QFile::ReadWrite | QFile::Text)) {
 		QMessageBox msgBox(this);
@@ -167,7 +171,7 @@ void PrintOptions::on_importButton_clicked()
 	}
 
 	QFile::copy(filename, dest);
-	printOptions->p_template = fileInfo.fileName();
+	printOptions.p_template = fileInfo.fileName();
 	lastImportExportTemplate = fileInfo.fileName();
 	find_all_templates();
 	setup();

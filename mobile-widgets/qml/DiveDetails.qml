@@ -59,6 +59,12 @@ Kirigami.Page {
 	background: Rectangle { color: subsurfaceTheme.backgroundColor }
 	width: rootItem.colWidth
 
+	// we want to use our own colors for Kirigami, so let's define our colorset
+	Kirigami.Theme.inherit: false
+	Kirigami.Theme.colorSet: Kirigami.Theme.Button
+	Kirigami.Theme.backgroundColor: subsurfaceTheme.backgroundColor
+	Kirigami.Theme.textColor: subsurfaceTheme.textColor
+
 	property QtObject removeDiveFromTripAction: Kirigami.Action {
 		text: qsTr ("Remove this dive from trip")
 		icon { name: ":/icons/chevron_left.svg" }
@@ -109,7 +115,7 @@ Kirigami.Page {
 		enabled: manager.redoText !== ""
 		onTriggered: manager.redo()
 	}
-	property variant contextactions: [ removeDiveFromTripAction, addDiveToTripAboveAction, addDiveToTripBelowAction, undoAction, redoAction ]
+	property variant contextactions: [ removeDiveFromTripAction, addDiveToTripAboveAction, addDiveToTripBelowAction, deleteAction, undoAction, redoAction ]
 
 	states: [
 		State {
@@ -117,7 +123,7 @@ Kirigami.Page {
 			PropertyChanges {
 				target: diveDetailsPage;
 				actions {
-					right: deleteAction
+					right: null
 					left: currentItem ? (currentItem.modelData && currentItem.modelData.gps !== "" ? mapAction : null) : null
 				}
 				contextualActions: contextactions
@@ -222,6 +228,7 @@ Kirigami.Page {
 		icon {
 			name: ":/icons/trash-empty.svg"
 		}
+		color: subsurfaceTheme.textColor
 		onTriggered: manager.deleteDive(currentItem.modelData.id)
 	}
 
@@ -230,6 +237,7 @@ Kirigami.Page {
 		icon {
 			name: ":/icons/dialog-cancel.svg"
 		}
+		color: subsurfaceTheme.textColor
 		onTriggered: {
 			endEditMode()
 		}
@@ -240,6 +248,7 @@ Kirigami.Page {
 		icon {
 			name: ":/icons/gps"
 		}
+		color: subsurfaceTheme.textColor
 		onTriggered: {
 			showMap()
 			mapPage.centerOnDiveSite(currentItem.modelData.diveSite)
@@ -342,17 +351,7 @@ Kirigami.Page {
 		airtemp = modelData.airTemp
 		watertemp = modelData.waterTemp
 		suitIndex = manager.suitList.indexOf(modelData.suit)
-		if (modelData.buddy.indexOf(",") > 0) {
-			buddyIndex = manager.buddyList.indexOf(modelData.buddy.split(",", 1).toString())
-		} else {
-			buddyIndex = manager.buddyList.indexOf(modelData.buddy)
-		}
 		buddyText = modelData.buddy;
-		if (modelData.diveMaster.indexOf(",") > 0) {
-			divemasterIndex = manager.divemasterList.indexOf(modelData.diveMaster.split(",", 1).toString())
-		} else {
-			divemasterIndex = manager.divemasterList.indexOf(modelData.diveMaster)
-		}
 		divemasterText = modelData.diveMaster
 		notes = modelData.notes
 		if (modelData.singleWeight) {
@@ -373,7 +372,7 @@ Kirigami.Page {
 		cylinderIndex4 = modelData.cylinderList.indexOf(usedCyl[4])
 		rating = modelData.rating
 		visibility = modelData.viz
-
+		detailsEdit.focusReset()
 		diveDetailsPage.state = "edit"
 	}
 
@@ -407,6 +406,7 @@ Kirigami.Page {
 				DiveDetailsView {
 					id: diveDetails
 					width: internalScrollView.width
+					myId: model.id
 				}
 				ScrollBar.vertical: ScrollBar { }
 			}

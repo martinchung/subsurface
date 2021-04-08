@@ -3,7 +3,6 @@
 #define PREFERENCES_WIDGET_H
 
 #include <QDialog>
-#include "core/pref.h"
 
 class AbstractPreferencesWidget;
 class QListWidget;
@@ -14,14 +13,10 @@ class QAbstractButton;
 class PreferencesDialog : public QDialog {
 	Q_OBJECT
 public:
-	static PreferencesDialog* instance();
+	static PreferencesDialog *instance();
 	~PreferencesDialog();
-	void addPreferencePage(AbstractPreferencesWidget *page);
 	void refreshPages();
-	void emitSettingsChanged();
 	void defaultsRequested();
-signals:
-	void settingsChanged();
 private:
 	PreferencesDialog();
 	void cancelRequested();

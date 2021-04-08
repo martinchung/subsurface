@@ -32,20 +32,6 @@
       <property name="orientation">
        <enum>Qt::Vertical</enum>
       </property>
-      <widget class="QSplitter" name="topSplitter">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <widget class="QStackedWidget" name="topLeft"/>
-       <widget class="QStackedWidget" name="topRight"/>
-      </widget>
-      <widget class="QSplitter" name="bottomSplitter">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <widget class="QStackedWidget" name="bottomLeft"/>
-       <widget class="QStackedWidget" name="bottomRight"/>
-      </widget>
      </widget>
     </item>
     <item>
@@ -96,7 +82,6 @@
     <addaction name="actionRenumber"/>
     <addaction name="actionAutoGroup"/>
     <addaction name="separator"/>
-    <addaction name="actionEditDeviceNames"/>
     <addaction name="actionFilterTags"/>
    </widget>
    <widget class="QMenu" name="menuView">
@@ -109,6 +94,7 @@
     <addaction name="actionViewInfo"/>
     <addaction name="actionViewMap"/>
     <addaction name="separator"/>
+    <addaction name="actionStats"/>
     <addaction name="actionYearlyStatistics"/>
     <addaction name="actionPreviousDC"/>
     <addaction name="actionNextDC"/>
@@ -235,11 +221,6 @@
    </property>
    <property name="shortcut">
     <string notr="true">Ctrl+D</string>
-   </property>
-  </action>
-  <action name="actionEditDeviceNames">
-   <property name="text">
-    <string>Edit device &amp;names</string>
    </property>
   </action>
   <action name="actionAddDive">
@@ -646,6 +627,14 @@
     <string notr="true">Ctrl+F</string>
    </property>
   </action>
+  <action name="actionStats">
+   <property name="text">
+    <string>Dive statistics</string>
+   </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+T</string>
+   </property>
+  </action>
   <action name="profTissues">
    <property name="checkable">
     <bool>true</bool>
@@ -682,6 +671,9 @@
   <action name="actionCloudstorageopen">
    <property name="text">
     <string>Open c&amp;loud storage</string>
+   </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+Shift+O</string>
    </property>
   </action>
   <action name="actionCloudstoragesave">
@@ -732,7 +724,6 @@
   </customwidget>
  </customwidgets>
  <resources>
-  <include location="../subsurface.qrc"/>
   <include location="../subsurface.qrc"/>
  </resources>
  <connections/>

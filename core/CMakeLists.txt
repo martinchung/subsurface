@@ -37,8 +37,6 @@ endif()
 
 # compile the core library part in C, part in C++
 set(SUBSURFACE_CORE_LIB_SRCS
-	applicationstate.cpp
-	applicationstate.h
 	checkcloudconnection.cpp
 	checkcloudconnection.h
 	cloudstorage.cpp
@@ -57,15 +55,16 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	datatrak.h
 	deco.c
 	deco.h
-	device.c
+	device.cpp
 	device.h
 	devicedetails.cpp
 	devicedetails.h
 	display.h
 	dive.c
 	dive.h
-	divecomputer.cpp
+	divecomputer.c
 	divecomputer.h
+	dive.h
 	divefilter.cpp
 	divefilter.h
 	divelist.c
@@ -79,13 +78,20 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	divesitehelpers.h
 	downloadfromdcthread.cpp
 	downloadfromdcthread.h
+	event.c
+	event.h
 	equipment.c
 	equipment.h
 	errorhelper.c
 	exif.cpp
 	exif.h
+	extradata.h
 	file.c
 	file.h
+	filterconstraint.cpp
+	filterconstraint.h
+	filterpreset.cpp
+	filterpreset.h
 	format.cpp
 	format.h
 	fulltext.cpp
@@ -110,6 +116,8 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	import-divinglog.c
 	import-shearwater.c
 	import-suunto.c
+	import-seac.c
+	interpolate.h
 	libdivecomputer.c
 	libdivecomputer.h
 	liquivision.c
@@ -133,12 +141,15 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	planner.h
 	plannernotes.c
 	pref.h
+	pref.c
 	profile.c
 	profile.h
 	qt-gui.h
 	qt-init.cpp
 	qthelper.cpp
 	qthelper.h
+	sample.c
+	sample.h
 	save-git.c
 	save-html.c
 	save-html.h
@@ -152,6 +163,8 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	statistics.c
 	statistics.h
 	strndup.h
+	string-format.h
+	string-format.cpp
 	strtod.c
 	subsurface-string.h
 	subsurfacestartup.c
@@ -186,6 +199,8 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	worldmap-options.h
 	worldmap-save.c
 	worldmap-save.h
+	xmlparams.cpp
+	xmlparams.h
 	xmp_parser.cpp
 	xmp_parser.h
 
@@ -228,12 +243,8 @@ set(SUBSURFACE_CORE_LIB_SRCS
 	settings/qPrefUpdateManager.h
 
 	#Subsurface Qt have the Subsurface structs QObjectified for easy access via QML.
-	subsurface-qt/cylinderobjecthelper.cpp
-	subsurface-qt/cylinderobjecthelper.h
 	subsurface-qt/divelistnotifier.cpp
 	subsurface-qt/divelistnotifier.h
-	subsurface-qt/diveobjecthelper.cpp
-	subsurface-qt/diveobjecthelper.h
 
 	${SERIAL_FTDI}
 	${PLATFORM_SRC}

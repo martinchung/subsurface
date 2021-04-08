@@ -3,11 +3,15 @@
 #ifndef DIVE_FILTER_H
 #define DIVE_FILTER_H
 
+#include "fulltext.h"
+#include "filterconstraint.h"
+#include <vector>
 #include <QVector>
 #include <QStringList>
-#include "fulltext.h"
 
 struct dive;
+struct dive_trip;
+struct dive_site;
 
 // Structure describing changes of shown status upon applying the filter
 struct ShownChange {
@@ -15,45 +19,6 @@ struct ShownChange {
 	QVector<dive *> newHidden;
 	bool currentChanged;
 };
-
-// The dive filter for mobile is currently much simpler than for desktop.
-// Therefore, for now we have two completely separate implementations.
-// This should be unified in the future.
-#ifdef SUBSURFACE_MOBILE
-
-struct FilterData {
-	// On mobile, we support searching fulltext (all fields), people (buddies and divemasters) and tags
-	enum class Mode {
-		NONE = 0,
-		FULLTEXT = 1,
-		PEOPLE = 2,
-		TAGS = 3
-	};
-
-	Mode mode = Mode::NONE;
-	FullTextQuery fullText; // For fulltext
-	QStringList tags; // For people and tags
-};
-
-class DiveFilter {
-public:
-	static DiveFilter *instance();
-
-	ShownChange update(const QVector<dive *> &dives) const; // Update filter status of given dives and return dives whose status changed
-	ShownChange updateAll() const; // Update filter status of all dives and return dives whose status changed
-	void setFilter(const FilterData &data);
-private:
-	DiveFilter();
-
-	FilterData filterData;
-};
-
-#else
-
-#include <QDateTime>
-
-struct dive_trip;
-struct dive_site;
 
 struct FilterData {
 	// The mode ids are chosen such that they can be directly converted from / to combobox indices.
@@ -63,65 +28,41 @@ struct FilterData {
 		NONE_OF = 2
 	};
 
-	bool validFilter = false;
-	int minVisibility = 0;
-	int maxVisibility = 5;
-	int minRating = 0;
-	int maxRating = 5;
-	// The default minimum and maximum temperatures are set such that all
-	// physically reasonable dives are shown. Note that these values should
-	// work for both Celsius and Fahrenheit scales.
-	double minWaterTemp = -10;
-	double maxWaterTemp = 200;
-	double minAirTemp = -50;
-	double maxAirTemp = 200;
-	QDateTime fromDate = QDateTime(QDate(1980,1,1));
-	QTime fromTime = QTime(0,0);
-	QDateTime toDate = QDateTime::currentDateTime().addDays(7);
-	QTime toTime = QTime::currentTime();
-	QStringList tags;
-	QStringList people;
-	QStringList location;
-	QStringList suit;
-	QStringList dnotes;
-	QStringList equipment;
 	FullTextQuery fullText;
-	Mode tagsMode = Mode::ALL_OF;
-	Mode peopleMode = Mode::ALL_OF;
-	Mode locationMode = Mode::ANY_OF;
-	Mode dnotesMode = Mode::ALL_OF;
-	Mode suitMode = Mode::ANY_OF;
-	Mode equipmentMode = Mode::ALL_OF;
 	StringFilterMode fulltextStringMode = StringFilterMode::STARTSWITH;
-	StringFilterMode tagsStringMode = StringFilterMode::SUBSTRING;
-	StringFilterMode peopleStringMode = StringFilterMode::SUBSTRING;
-	StringFilterMode locationStringMode = StringFilterMode::SUBSTRING;
-	StringFilterMode dnotesStringMode = StringFilterMode::SUBSTRING;
-	StringFilterMode suitStringMode = StringFilterMode::SUBSTRING;
-	StringFilterMode equipmentStringMode = StringFilterMode::SUBSTRING;
-	bool logged = true;
-	bool planned = true;
-	int diveMode = -1; // -1: don't filter, >= 0: corresponds to divemode_t
+	std::vector<filter_constraint> constraints;
+	bool validFilter() const;
+	bool operator==(const FilterData &) const;
 };
 
 class DiveFilter {
 public:
 	static DiveFilter *instance();
 
-	bool diveSiteMode() const; // returns true if we're filtering on dive site
+	void reset();
+	QString shownText() const;
+	int shownDives() const;
+	bool diveSiteMode() const; // returns true if we're filtering on dive site (on mobile always returns false)
+	std::vector<dive *> visibleDives() const;
+#ifndef SUBSURFACE_MOBILE
 	const QVector<dive_site *> &filteredDiveSites() const;
 	void startFilterDiveSites(QVector<dive_site *> ds);
 	void setFilterDiveSite(QVector<dive_site *> ds);
 	void stopFilterDiveSites();
+#endif
 	void setFilter(const FilterData &data);
 	ShownChange update(const QVector<dive *> &dives) const; // Update filter status of given dives and return dives whose status changed
 	ShownChange updateAll() const; // Update filter status of all dives and return dives whose status changed
+	void diveRemoved(const dive *dive) const; // Dive was removed; update count accordingly
 private:
 	DiveFilter();
 	bool showDive(const struct dive *d) const; // Should that dive be shown?
+	bool setFilterStatus(struct dive *d, bool shown) const;
+	void updateDiveStatus(dive *d, bool newStatus, ShownChange &change) const;
 
 	QVector<dive_site *> dive_sites;
 	FilterData filterData;
+	mutable int shown_dives;
 
 	// We use ref-counting for the dive site mode. The reason is that when switching
 	// between two tabs that both need dive site mode, the following course of
@@ -131,6 +72,5 @@ private:
 	// The filter is now not in dive site mode, even if it should
 	int diveSiteRefCount;
 };
-#endif // SUBSURFACE_MOBILE
 
 #endif

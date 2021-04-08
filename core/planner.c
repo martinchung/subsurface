@@ -12,9 +12,12 @@
 #include "ssrf.h"
 #include "dive.h"
 #include "divelist.h" // for init_decompression()
+#include "sample.h"
 #include "subsurface-string.h"
 #include "deco.h"
 #include "errorhelper.h"
+#include "event.h"
+#include "interpolate.h"
 #include "planner.h"
 #include "subsurface-time.h"
 #include "gettext.h"
@@ -100,7 +103,7 @@ static void interpolate_transition(struct deco_state *ds, struct dive *dive, dur
 
 	for (j = t0.seconds; j < t1.seconds; j++) {
 		int depth = interpolate(d0.mm, d1.mm, j - t0.seconds, t1.seconds - t0.seconds);
-		add_segment(ds, depth_to_bar(depth, dive), gasmix, 1, po2.mbar, divemode, prefs.bottomsac);
+		add_segment(ds, depth_to_bar(depth, dive), gasmix, 1, po2.mbar, divemode, prefs.bottomsac, true);
 	}
 	if (d1.mm > d0.mm)
 		calc_crushing_pressure(ds, depth_to_bar(d1.mm, dive));
@@ -122,7 +125,7 @@ static int tissue_at_end(struct deco_state *ds, struct dive *dive, struct deco_s
 	if (*cached_datap) {
 		restore_deco_state(*cached_datap, ds, true);
 	} else {
-		surface_interval = init_decompression(ds, dive);
+		surface_interval = init_decompression(ds, dive, true);
 		cache_deco_state(ds, cached_datap);
 	}
 	dc = &dive->dc;
@@ -155,12 +158,12 @@ static int tissue_at_end(struct deco_state *ds, struct dive *dive, struct deco_s
 		 * portion of the dive.
 		 * Remember the value for later.
 		 */
-		if ((decoMode() == VPMB) && (lastdepth.mm > sample->depth.mm)) {
+		if ((decoMode(true) == VPMB) && (lastdepth.mm > sample->depth.mm)) {
 			pressure_t ceiling_pressure;
 			nuclear_regeneration(ds, t0.seconds);
 			vpmb_start_gradient(ds);
 			ceiling_pressure.mbar = depth_to_mbar(deco_allowed_depth(tissue_tolerance_calc(ds, dive,
-													depth_to_bar(lastdepth.mm, dive)),
+													depth_to_bar(lastdepth.mm, dive), true),
 										dive->surface_pressure.mbar / 1000.0,
 										dive,
 										1),
@@ -379,7 +382,23 @@ struct gaschanges {
 	int gasidx;
 };
 
-static struct gaschanges *analyze_gaslist(struct diveplan *diveplan, struct dive *dive, int *gaschangenr, int depth, int *asc_cylinder)
+// Return new setpoint if cylinderi is a setpoint change an 0 if not
+
+static int setpoint_change(struct dive *dive, int cylinderid)
+{
+	cylinder_t *cylinder = get_cylinder(dive, cylinderid);
+	if (!cylinder->type.description)
+		return 0;
+	if (!strncmp(cylinder->type.description, "SP ", 3)) {
+		float sp;
+		sscanf(cylinder->type.description + 3, "%f", &sp);
+		return (int) (sp * 1000);
+	} else {
+		return 0;
+	}
+}
+
+static struct gaschanges *analyze_gaslist(struct diveplan *diveplan, struct dive *dive, int *gaschangenr, int depth, int *asc_cylinder, bool ccr)
 {
 	int nr = 0;
 	struct gaschanges *gaschanges = NULL;
@@ -387,7 +406,7 @@ static struct gaschanges *analyze_gaslist(struct diveplan *diveplan, struct dive
 	int best_depth = get_cylinder(dive, *asc_cylinder)->depth.mm;
 	bool total_time_zero = true;
 	while (dp) {
-		if (dp->time == 0 && total_time_zero) {
+		if (dp->time == 0 && total_time_zero && (ccr == (bool) setpoint_change(dive, dp->cylinderid))) {
 			if (dp->depth.mm <= depth) {
 				int i = 0;
 				nr++;
@@ -530,9 +549,9 @@ static bool trial_ascent(struct deco_state *ds, int wait_time, int trial_depth, 
 	if (wait_time)
 		add_segment(ds, depth_to_bar(trial_depth, dive),
 			    gasmix,
-			    wait_time, po2, divemode, prefs.decosac);
-	if (decoMode() == VPMB) {
-		double tolerance_limit = tissue_tolerance_calc(ds, dive, depth_to_bar(stoplevel, dive));
+			    wait_time, po2, divemode, prefs.decosac, true);
+	if (decoMode(true) == VPMB) {
+		double tolerance_limit = tissue_tolerance_calc(ds, dive, depth_to_bar(stoplevel, dive), true);
 		update_regression(ds, dive);
 		if (deco_allowed_depth(tolerance_limit, surface_pressure, dive, 1) > stoplevel) {
 			restore_deco_state(trial_cache, ds, false);
@@ -548,9 +567,9 @@ static bool trial_ascent(struct deco_state *ds, int wait_time, int trial_depth, 
 			deltad = trial_depth;
 		add_segment(ds, depth_to_bar(trial_depth, dive),
 			    gasmix,
-			    TIMESTEP, po2, divemode, prefs.decosac);
-		tolerance_limit = tissue_tolerance_calc(ds, dive, depth_to_bar(trial_depth, dive));
-		if (decoMode() == VPMB)
+			    TIMESTEP, po2, divemode, prefs.decosac, true);
+		tolerance_limit = tissue_tolerance_calc(ds, dive, depth_to_bar(trial_depth, dive), true);
+		if (decoMode(true) == VPMB)
 			update_regression(ds, dive);
 		if (deco_allowed_depth(tolerance_limit, surface_pressure, dive, 1) > trial_depth - deltad) {
 			/* We should have stopped */
@@ -675,7 +694,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	if (!diveplan->surface_pressure)
 		diveplan->surface_pressure = SURFACE_PRESSURE;
 	dive->surface_pressure.mbar = diveplan->surface_pressure;
-	clear_deco(ds, dive->surface_pressure.mbar / 1000.0);
+	clear_deco(ds, dive->surface_pressure.mbar / 1000.0, true);
 	ds->max_bottom_ceiling_pressure.mbar = ds->first_ceiling_pressure.mbar = 0;
 	create_dive_from_plan(diveplan, dive, is_planner);
 
@@ -734,12 +753,8 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	best_first_ascend_cylinder = current_cylinder;
 	/* Find the gases available for deco */
 
-	if (divemode == CCR && !prefs.dobailout) {	// Don't change gas in CCR mode
-		gaschanges = NULL;
-		gaschangenr = 0;
-	} else {
-		gaschanges = analyze_gaslist(diveplan, dive, &gaschangenr, depth, &best_first_ascend_cylinder);
-	}
+	gaschanges = analyze_gaslist(diveplan, dive, &gaschangenr, depth, &best_first_ascend_cylinder, divemode == CCR && !prefs.dobailout);
+
 	/* Find the first potential decostopdepth above current depth */
 	for (stopidx = 0; stopidx < decostoplevelcount; stopidx++)
 		if (*(decostoplevels + stopidx) >= depth)
@@ -756,14 +771,14 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	diveplan->surface_interval = tissue_at_end(ds, dive, cached_datap);
 	nuclear_regeneration(ds, clock);
 	vpmb_start_gradient(ds);
-	if (decoMode() == RECREATIONAL) {
+	if (decoMode(true) == RECREATIONAL) {
 		bool safety_stop = prefs.safetystop && max_depth >= 10000;
 		track_ascent_gas(depth, dive, current_cylinder, avg_depth, bottom_time, safety_stop, divemode);
 		// How long can we stay at the current depth and still directly ascent to the surface?
 		do {
 			add_segment(ds, depth_to_bar(depth, dive),
 				    get_cylinder(dive, current_cylinder)->gasmix,
-				    timestep, po2, divemode, prefs.bottomsac);
+				    timestep, po2, divemode, prefs.bottomsac, true);
 			update_cylinder_pressure(dive, depth, depth, timestep, prefs.bottomsac, get_cylinder(dive, current_cylinder), false, divemode);
 			clock += timestep;
 		} while (trial_ascent(ds, 0, depth, 0, avg_depth, bottom_time, get_cylinder(dive, current_cylinder)->gasmix,
@@ -825,11 +840,12 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	if ((divemode == CCR || divemode == PSCR) && prefs.dobailout) {
 		divemode = OC;
 		po2 = 0;
+		int bailoutsegment = MAX(prefs.min_switch_duration, 60 * prefs.problemsolvingtime);
 		add_segment(ds, depth_to_bar(depth, dive),
 			get_cylinder(dive, current_cylinder)->gasmix,
-			prefs.min_switch_duration, po2, divemode, prefs.bottomsac);
-		plan_add_segment(diveplan, prefs.min_switch_duration, depth, current_cylinder, po2, false, divemode);
-		clock += prefs.min_switch_duration;
+			bailoutsegment, po2, divemode, prefs.bottomsac, true);
+		plan_add_segment(diveplan, bailoutsegment, depth, current_cylinder, po2, false, divemode);
+		bottom_time += bailoutsegment;
 		last_segment_min_switch = true;
 	}
 	previous_deco_time = 100000000;
@@ -843,9 +859,9 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	//CVA
 	do {
 		decostopcounter = 0;
-		is_final_plan = (decoMode() == BUEHLMANN) || (previous_deco_time - ds->deco_time < 10);  // CVA time converges
+		is_final_plan = (decoMode(true) == BUEHLMANN) || (previous_deco_time - ds->deco_time < 10);  // CVA time converges
 		if (ds->deco_time != 10000000)
-			vpmb_next_gradient(ds, ds->deco_time, diveplan->surface_pressure / 1000.0);
+			vpmb_next_gradient(ds, ds->deco_time, diveplan->surface_pressure / 1000.0, true);
 
 		previous_deco_time = ds->deco_time;
 		restore_deco_state(bottom_cache, ds, true);
@@ -859,7 +875,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 		first_stop_depth = 0;
 		stopidx = bottom_stopidx;
 		ds->first_ceiling_pressure.mbar = depth_to_mbar(
-					deco_allowed_depth(tissue_tolerance_calc(ds, dive, depth_to_bar(depth, dive)),
+					deco_allowed_depth(tissue_tolerance_calc(ds, dive, depth_to_bar(depth, dive), true),
 							   diveplan->surface_pressure / 1000.0, dive, 1),
 					dive);
 		if (ds->max_bottom_ceiling_pressure.mbar > ds->first_ceiling_pressure.mbar)
@@ -894,7 +910,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 
 				add_segment(ds, depth_to_bar(depth, dive),
 								get_cylinder(dive, current_cylinder)->gasmix,
-								TIMESTEP, po2, divemode, prefs.decosac);
+								TIMESTEP, po2, divemode, prefs.decosac, true);
 				last_segment_min_switch = false;
 				clock += TIMESTEP;
 				depth -= deltad;
@@ -925,6 +941,8 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 						previous_point_time = clock;
 						current_cylinder = gaschanges[gi].gasidx;
 						gas = get_cylinder(dive, current_cylinder)->gasmix;
+						if (divemode == CCR)
+							po2 = setpoint_change(dive, current_cylinder);
 #if DEBUG_PLAN & 16
 						printf("switch to gas %d (%d/%d) @ %5.2lfm\n", gaschanges[gi].gasidx,
 							(get_o2(&gas) + 5) / 10, (get_he(&gas) + 5) / 10, gaschanges[gi].depth / 1000.0);
@@ -933,7 +951,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 						if (!last_segment_min_switch && get_o2(get_cylinder(dive, current_cylinder)->gasmix) != 1000) {
 							add_segment(ds, depth_to_bar(depth, dive),
 								get_cylinder(dive, current_cylinder)->gasmix,
-								prefs.min_switch_duration, po2, divemode, prefs.decosac);
+								prefs.min_switch_duration, po2, divemode, prefs.decosac, true);
 							clock += prefs.min_switch_duration;
 							last_segment_min_switch = true;
 						}
@@ -979,6 +997,8 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 				if (pendinggaschange) {
 					current_cylinder = gaschanges[gi + 1].gasidx;
 					gas = get_cylinder(dive, current_cylinder)->gasmix;
+					if (divemode == CCR)
+						po2 = setpoint_change(dive, current_cylinder);
 #if DEBUG_PLAN & 16
 					printf("switch to gas %d (%d/%d) @ %5.2lfm\n", gaschanges[gi + 1].gasidx,
 						(get_o2(&gas) + 5) / 10, (get_he(&gas) + 5) / 10, gaschanges[gi + 1].depth / 1000.0);
@@ -987,7 +1007,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 					if (!last_segment_min_switch && get_o2(get_cylinder(dive, current_cylinder)->gasmix) != 1000) {
 						add_segment(ds, depth_to_bar(depth, dive),
 							get_cylinder(dive, current_cylinder)->gasmix,
-							prefs.min_switch_duration, po2, divemode, prefs.decosac);
+							prefs.min_switch_duration, po2, divemode, prefs.decosac, true);
 						clock += prefs.min_switch_duration;
 						last_segment_min_switch = true;
 					}
@@ -1043,7 +1063,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 					}
 				}
 				add_segment(ds, depth_to_bar(depth, dive), get_cylinder(dive, stop_cylinder)->gasmix,
-					    laststoptime, po2, divemode, prefs.decosac);
+					    laststoptime, po2, divemode, prefs.decosac, true);
 				last_segment_min_switch = false;
 				decostoptable[decostopcounter].depth = depth;
 				decostoptable[decostopcounter].time = laststoptime;
@@ -1070,7 +1090,7 @@ bool plan(struct deco_state *ds, struct diveplan *diveplan, struct dive *dive, i
 	decostoptable[decostopcounter].depth = 0;
 
 	plan_add_segment(diveplan, clock - previous_point_time, 0, current_cylinder, po2, false, divemode);
-	if (decoMode() == VPMB) {
+	if (decoMode(true) == VPMB) {
 		diveplan->eff_gfhigh = lrint(100.0 * regressionb(ds));
 		diveplan->eff_gflow = lrint(100.0 * (regressiona(ds) * first_stop_depth + regressionb(ds)));
 	}

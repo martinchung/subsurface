@@ -28,15 +28,15 @@ extern "C" {
 
 struct dive;
 struct dive_computer;
+struct devices;
 
-typedef struct dc_user_device_t
-{
+typedef struct {
 	dc_descriptor_t *descriptor;
 	const char *vendor, *product, *devname;
 	const char *model, *btname;
 	unsigned char *fingerprint;
 	unsigned int fsize, fdiveid;
-	uint32_t libdc_firmware, libdc_serial;
+	uint32_t libdc_firmware;
 	uint32_t deviceid, diveid;
 	dc_device_t *device;
 	dc_context_t *context;
@@ -48,6 +48,7 @@ typedef struct dc_user_device_t
 	FILE *libdc_logfile;
 	struct dive_table *download_table;
 	struct dive_site_table *sites;
+	struct device_table *devices;
 	void *androidUsbDeviceDescriptor;
 } device_data_t;
 

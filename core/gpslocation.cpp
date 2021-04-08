@@ -15,17 +15,12 @@
 #include <QApplication>
 #include <QTimer>
 
-GpsLocation *GpsLocation::m_Instance = NULL;
-
-GpsLocation::GpsLocation(void (*showMsgCB)(const char *), QObject *parent) :
-	QObject(parent),
+GpsLocation::GpsLocation() :
 	m_GpsSource(0),
+	showMessageCB(0),
 	waitingForPosition(false),
 	haveSource(UNKNOWN)
 {
-	Q_ASSERT_X(m_Instance == NULL, "GpsLocation", "GpsLocation recreated");
-	m_Instance = this;
-	showMessageCB = showMsgCB;
 	// create a QSettings object that's separate from the main application settings
 	geoSettings = new QSettings(QSettings::NativeFormat, QSettings::UserScope,
 				    QStringLiteral("org.subsurfacedivelog"), QStringLiteral("subsurfacelocation"), this);
@@ -39,19 +34,17 @@ GpsLocation::GpsLocation(void (*showMsgCB)(const char *), QObject *parent) :
 
 GpsLocation *GpsLocation::instance()
 {
-	Q_ASSERT(m_Instance != NULL);
-
-	return m_Instance;
-}
-
-bool GpsLocation::hasInstance()
-{
-	return m_Instance != NULL;
+	static GpsLocation self;
+	return &self;
 }
 
 GpsLocation::~GpsLocation()
 {
-	m_Instance = NULL;
+}
+
+void GpsLocation::setLogCallBack(void (*showMsgCB)(const char *))
+{
+	showMessageCB = showMsgCB;
 }
 
 void GpsLocation::setGpsTimeThreshold(int seconds)
@@ -133,7 +126,7 @@ QString GpsLocation::currentPosition()
 	if (!hasLocationsSource())
 		return tr("Unknown GPS location (no GPS source)");
 	if (m_trackers.count()) {
-		QDateTime lastFixTime =	timestampToDateTime(m_trackers.lastKey() + gettimezoneoffset());
+		QDateTime lastFixTime =	timestampToDateTime(m_trackers.lastKey() - gettimezoneoffset());
 		QDateTime now = QDateTime::currentDateTime();
 		int delta = lastFixTime.secsTo(now);
 		qDebug() << "lastFixTime" << lastFixTime.toString() << "now" << now.toString() << "delta" << delta;
@@ -175,14 +168,13 @@ void GpsLocation::newPosition(QGeoPositionInfo pos)
 	    lastCoord.distanceTo(pos.coordinate()) > prefs.distance_threshold) {
 		QString msg = QStringLiteral("received new position %1 after delta %2 threshold %3 (now %4 last %5)");
 		status(qPrintable(msg.arg(pos.coordinate().toString()).arg(delta).arg(prefs.time_threshold).arg(pos.timestamp().toString()).arg(timestampToDateTime(lastTime).toString())));
-		waitingForPosition = false;
-		acquiredPosition();
 		gpsTracker gt;
 		gt.when = thisTime;
 		gt.location = create_location(pos.coordinate().latitude(), pos.coordinate().longitude());
 		addFixToStorage(gt);
 		gpsTracker gtNew = m_trackers.last();
-		qDebug() << "newest fix is now at" << timestampToDateTime(gtNew.when - gettimezoneoffset()).toString();
+		waitingForPosition = false;
+		acquiredPosition();
 	}
 }
 
@@ -329,6 +321,16 @@ void GpsLocation::loadFromStorage()
 	}
 }
 
+QString GpsLocation::getFixString()
+{
+	// only used for debugging
+	QString res;
+	struct gpsTracker gpsEntry;
+	foreach (gpsEntry, m_trackers.values())
+		res += QString("%1: %2; %3 ; \"%4\"\n").arg(gpsEntry.when).arg(gpsEntry.location.lat.udeg).arg(gpsEntry.location.lon.udeg).arg(gpsEntry.name);
+	return res;
+}
+
 void GpsLocation::replaceFixToStorage(gpsTracker &gt)
 {
 	if (!m_trackers.keys().contains(gt.when)) {
@@ -411,8 +413,3 @@ void GpsLocation::clearGpsData()
 	geoSettings->sync();
 }
 #endif
-
-void GpsLocation::postError(QNetworkReply::NetworkError)
-{
-	status(QStringLiteral("error when sending a GPS fix: %1").arg(reply->errorString()));
-}

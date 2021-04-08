@@ -18,9 +18,7 @@
 #include "ui_mainwindow.h"
 #include "ui_plannerDetails.h"
 #include "desktop-widgets/notificationwidget.h"
-#include "desktop-widgets/filterwidget2.h"
-#include "core/applicationstate.h"
-#include "core/gpslocation.h"
+#include "desktop-widgets/filterwidget.h"
 #include "core/dive.h"
 #include "core/subsurface-qt/divelistnotifier.h"
 
@@ -31,35 +29,19 @@ class DiveTripModel;
 class QItemSelection;
 class DiveListView;
 class MainTab;
+class MapWidget;
 class QWebView;
 class QSettings;
 class UpdateManager;
 class UserManual;
-class DivePlannerWidget;
+class PlannerWidgets;
 class ProfileWidget2;
-class PlannerDetails;
-class PlannerSettingsWidget;
+class StatsWidget;
 class LocationInformationWidget;
-
-typedef std::pair<QByteArray, QVariant> WidgetProperty;
-typedef QVector<WidgetProperty> PropertyList;
 
 class MainWindow : public QMainWindow {
 	Q_OBJECT
 public:
-	enum {
-		COLLAPSED,
-		EXPANDED
-	};
-
-	enum CurrentState {
-		VIEWALL,
-		MAP_MAXIMIZED,
-		INFO_MAXIMIZED,
-		PROFILE_MAXIMIZED,
-		LIST_MAXIMIZED,
-	};
-
 	MainWindow();
 	~MainWindow();
 	static MainWindow *instance();
@@ -70,10 +52,24 @@ public:
 	LocationInformationWidget *locationInformationWidget();
 	void setTitle();
 
+	enum class ApplicationState {
+		Default,
+		EditDive,
+		PlanDive,
+		EditPlannedDive,
+		EditDiveSite,
+		FilterDive,
+		Statistics,
+		MapMaximized,
+		ProfileMaximized,
+		ListMaximized,
+		InfoMaximized,
+		Count
+	};
+
 	void loadFiles(const QStringList files);
 	void importFiles(const QStringList importFiles);
 	void setToolButtonsEnabled(bool enabled);
-	void printPlan();
 	void setApplicationState(ApplicationState state);
 	bool inPlanner();
 	NotificationWidget *getNotificationWidget();
@@ -82,11 +78,12 @@ public:
 	void editDiveSite(dive_site *ds);
 
 	std::unique_ptr<MainTab> mainTab;
-	PlannerDetails *plannerDetails;
-	PlannerSettingsWidget *divePlannerSettingsWidget;
+	std::unique_ptr<PlannerWidgets> plannerWidgets;
+	std::unique_ptr<StatsWidget> statistics;
 	ProfileWidget2 *graphics;
-	DivePlannerWidget *divePlannerWidget;
-	DiveListView *diveList;
+	std::unique_ptr<DiveListView> diveList;
+	std::unique_ptr<QWidget> profileContainer;
+	std::unique_ptr<MapWidget> mapWidget;
 private
 slots:
 	/* file menu action */
@@ -107,7 +104,6 @@ slots:
 	/* log menu actions */
 	void on_actionDownloadDC_triggered();
 	void on_actionDivelogs_de_triggered();
-	void on_actionEditDeviceNames_triggered();
 	void on_actionAddDive_triggered();
 	void on_actionRenumber_triggered();
 	void on_actionAutoGroup_triggered();
@@ -141,6 +137,7 @@ slots:
 	void on_copy_triggered();
 	void on_paste_triggered();
 	void on_actionFilterTags_triggered();
+	void on_actionStats_triggered();
 	void on_actionConfigure_Dive_Computer_triggered();
 	void setDefaultState();
 	void setAutomaticTitle();
@@ -165,7 +162,6 @@ slots:
 	void planCanceled();
 	void planCreated();
 	void setEnabledToolbar(bool arg1);
-	void setPlanNotes(QString plan);
 	// Some shortcuts like "change DC" or "copy/paste dive components"
 	// should only be enabled when the profile's visible.
 	void disableShortcuts(bool disablePaste = true);
@@ -173,8 +169,11 @@ slots:
 	void startDiveSiteEdit();
 
 private:
+	ApplicationState appState;
 	Ui::MainWindow ui;
-	FilterWidget2 filterWidget2;
+	FilterWidget filterWidget;
+	std::unique_ptr<QSplitter> topSplitter;
+	std::unique_ptr<QSplitter> bottomSplitter;
 	QAction *actionNextDive;
 	QAction *actionPreviousDive;
 	QAction *undoAction;
@@ -182,8 +181,6 @@ private:
 #ifndef NO_USERMANUAL
 	UserManual *helpView;
 #endif
-	CurrentState state;
-	CurrentState stateBeforeEdit;
 	QString filter_open();
 	QString filter_import();
 	QString filter_import_dive_sites();
@@ -199,16 +196,12 @@ private:
 	void writeSettings();
 	int file_save();
 	int file_save_as();
-	void setFileClean();
-	void beginChangeState(CurrentState s);
 	void saveSplitterSizes();
-	void toggleCollapsible(bool toggle);
-	void showFilterIfEnabled();
+	void restoreSplitterSizes();
 	void updateLastUsedDir(const QString &s);
-	void enterState(CurrentState);
 	bool filesAsArguments;
 	UpdateManager *updateManager;
-	LocationInformationWidget *diveSiteEdit;
+	std::unique_ptr<LocationInformationWidget> diveSiteEdit;
 
 	bool plannerStateClean();
 	void configureToolbar();
@@ -231,6 +224,7 @@ private:
 	};
 
 	struct Quadrants {
+		bool allowUserChange; // Allow the user to change away from this state
 		Quadrant topLeft;
 		Quadrant topRight;
 		Quadrant bottomLeft;
@@ -238,11 +232,12 @@ private:
 	};
 
 	Quadrants applicationState[(size_t)ApplicationState::Count];
-	static void setQuadrant(const Quadrant &, QStackedWidget *);
-	static void addWidgets(const Quadrant &, QStackedWidget *);
+	static void addWidgets(const Quadrant &);
+	bool userMayChangeAppState() const;
+	void setQuadrantWidget(QSplitter &splitter, const Quadrant &q, int pos);
+	void setQuadrantWidgets(QSplitter &splitter, const Quadrant &left, const Quadrant &right);
 	void registerApplicationState(ApplicationState state, Quadrants q);
 
-	GpsLocation *locationProvider;
 	QMenu *connections;
 	QAction *share_on_fb;
 	void divesChanged(const QVector<dive *> &dives, DiveField field);

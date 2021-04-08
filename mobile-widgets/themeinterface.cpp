@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "themeinterface.h"
+#include "core/subsurface-string.h"
 #include "qmlmanager.h"
 #include "core/metrics.h"
 #include "core/settings/qPrefDisplay.h"
@@ -37,7 +38,7 @@ static const QColor DARK_DARKER_PRIMARY_COLOR = "#303F9f";
 static const QColor DARK_DARKER_PRIMARY_TEXT_COLOR = "#ECECEC";
 static const QColor DARK_DRAWER_COLOR = "#424242";
 static const QColor DARK_LIGHT_DRAWER_COLOR = "#FFFFFF";
-static const QColor DARK_LIGHT_PRIMARY_COLOR = "#C5CAE9";
+static const QColor DARK_LIGHT_PRIMARY_COLOR = "#303050";
 static const QColor DARK_LIGHT_PRIMARY_TEXT_COLOR = "#ECECEC";
 static const QColor DARK_PRIMARY_COLOR = "#3F51B5";
 static const QColor DARK_PRIMARY_TEXT_COLOR = "#ECECEC";
@@ -55,13 +56,7 @@ ThemeInterface::ThemeInterface()
 	// get current theme
 	m_currentTheme = qPrefDisplay::theme();
 	update_theme();
-
-	// check system font and create QFontInfo in order to reliably get the point size
-	QFontInfo qfi(defaultModelFont());
-	m_basePointSize = qfi.pointSize();
-
-	// set initial font size
-	set_currentScale(qPrefDisplay::mobile_scale());
+	m_basePointSize = -1.0; // simply a placeholder to declare 'this isn't set, yet'
 }
 
 void ThemeInterface::set_currentTheme(const QString &theme)
@@ -72,6 +67,12 @@ void ThemeInterface::set_currentTheme(const QString &theme)
 	emit currentThemeChanged();
 }
 
+void ThemeInterface::setInitialFontSize(double fontSize)
+{
+	m_basePointSize = fontSize;
+	set_currentScale(qPrefDisplay::mobile_scale());
+}
+
 double ThemeInterface::currentScale()
 {
 	return qPrefDisplay::mobile_scale();
@@ -79,26 +80,30 @@ double ThemeInterface::currentScale()
 
 void ThemeInterface::set_currentScale(double newScale)
 {
-	if (newScale != qPrefDisplay::mobile_scale()) {
+	static bool needSignals = true; // make sure the signals fire the first time
+
+	if (!IS_FP_SAME(newScale, qPrefDisplay::mobile_scale())) {
 		qPrefDisplay::set_mobile_scale(newScale);
 		emit currentScaleChanged();
+		needSignals = true;
 	}
+	if (needSignals) {
+		// adjust all used font sizes
+		m_regularPointSize = m_basePointSize * newScale;
+		defaultModelFont().setPointSizeF(m_regularPointSize);
+		emit regularPointSizeChanged();
 
-	// Set current font size
-	defaultModelFont().setPointSizeF(m_basePointSize * qPrefDisplay::mobile_scale());
+		m_headingPointSize = m_regularPointSize * 1.2;
+		emit headingPointSizeChanged();
 
-	// adjust all used font sizes
-	m_regularPointSize = m_basePointSize * qPrefDisplay::mobile_scale();
-	emit regularPointSizeChanged();
+		m_smallPointSize = m_regularPointSize * 0.8;
+		emit smallPointSizeChanged();
 
-	m_headingPointSize = m_regularPointSize * 1.2;
-	emit headingPointSizeChanged();
+		m_titlePointSize = m_regularPointSize * 1.5;
+		emit titlePointSizeChanged();
 
-	m_smallPointSize = m_regularPointSize * 0.8;
-	emit smallPointSizeChanged();
-
-	m_titlePointSize = m_regularPointSize * 1.5;
-	emit titlePointSizeChanged();
+		needSignals = false;
+	}
 }
 
 void ThemeInterface::update_theme()

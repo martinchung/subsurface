@@ -78,7 +78,7 @@ void StarWidget::paintEvent(QPaintEvent*)
 	if (hasFocus()) {
 		QStyleOptionFocusRect option;
 		option.initFrom(this);
-		option.backgroundColor = palette().color(QPalette::Background);
+		option.backgroundColor = palette().color(QPalette::Window);
 		style()->drawPrimitive(QStyle::PE_FrameFocusRect, &option, &p, this);
 	}
 }
@@ -108,7 +108,7 @@ static QImage grayImage(const QImage &coloredImg)
 	return img;
 }
 
-StarWidget::StarWidget(QWidget *parent, Qt::WindowFlags f) : QWidget(parent, f),
+StarWidget::StarWidget(QWidget *parent) : QWidget(parent, QFlag(0)),
 	current(0),
 	readOnly(false)
 {

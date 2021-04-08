@@ -2,13 +2,14 @@
 #ifndef PRINTER_H
 #define PRINTER_H
 
-#include <QPrinter>
-#include <QWebView>
-#include <QRect>
-#include <QPainter>
-
 #include "printoptions.h"
 #include "templateedit.h"
+
+class ProfileWidget2;
+class QPainter;
+class QPaintDevice;
+class QRect;
+class QWebView;
 
 class Printer : public QObject {
 	Q_OBJECT
@@ -22,21 +23,23 @@ public:
 private:
 	QPaintDevice *paintDevice;
 	QWebView *webView;
-	print_options *printOptions;
-	template_options *templateOptions;
+	const print_options &printOptions;
+	const template_options &templateOptions;
 	QSize pageSize;
 	PrintMode printMode;
+	bool inPlanner;
 	int done;
 	int dpi;
 	void render(int Pages);
 	void flowRender();
-	void putProfileImage(QRect box, QRect viewPort, QPainter *painter, struct dive *dive, QPointer<ProfileWidget2> profile);
+	void putProfileImage(const QRect &box, const QRect &viewPort, QPainter *painter,
+			     struct dive *dive, ProfileWidget2 *profile);
 
 private slots:
 	void templateProgessUpdated(int value);
 
 public:
-	Printer(QPaintDevice *paintDevice, print_options *printOptions, template_options *templateOptions, PrintMode printMode);
+	Printer(QPaintDevice *paintDevice, const print_options &printOptions, const template_options &templateOptions, PrintMode printMode, bool inPlanner);
 	~Printer();
 	void print();
 	void previewOnePage();

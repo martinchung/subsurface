@@ -3,15 +3,13 @@
 #include "profile-widget/divetextitem.h"
 #include "core/qthelper.h"
 #include "core/subsurface-string.h"
-#ifndef SUBSURFACE_MOBILE
-#include "desktop-widgets/preferences/preferencesdialog.h"
-#endif
+#include "core/subsurface-qt/divelistnotifier.h"
 #include "qt-models/diveplotdatamodel.h"
 #include "profile-widget/animationfunctions.h"
 #include "profile-widget/divelineitem.h"
 #include "profile-widget/profilewidget2.h"
 
-QPen DiveCartesianAxis::gridPen()
+QPen DiveCartesianAxis::gridPen() const
 {
 	QPen pen;
 	pen.setColor(getColor(TIME_GRID));
@@ -98,7 +96,7 @@ void DiveCartesianAxis::setOrientation(Orientation o)
 	changed = true;
 }
 
-QColor DiveCartesianAxis::colorForValue(double)
+QColor DiveCartesianAxis::colorForValue(double) const
 {
 	return QColor(Qt::black);
 }
@@ -267,7 +265,7 @@ void DiveCartesianAxis::animateChangeLine(const QLineF &newLine)
 	sizeChanged();
 }
 
-QString DiveCartesianAxis::textForValue(double value)
+QString DiveCartesianAxis::textForValue(double value) const
 {
 	return QString("%L1").arg(value, 0, 'g', 4);
 }
@@ -299,7 +297,7 @@ qreal DiveCartesianAxis::valueAt(const QPointF &p) const
 	return fraction * (max - min) + min;
 }
 
-qreal DiveCartesianAxis::posAtValue(qreal value)
+qreal DiveCartesianAxis::posAtValue(qreal value) const
 {
 	QLineF m = line();
 	QPointF p = pos();
@@ -351,31 +349,28 @@ void DiveCartesianAxis::setColor(const QColor &color)
 	setPen(defaultPen);
 }
 
-QString DepthAxis::textForValue(double value)
+QString DepthAxis::textForValue(double value) const
 {
 	if (value == 0)
 		return QString();
 	return get_depth_string(lrint(value), false, false);
 }
 
-QColor DepthAxis::colorForValue(double)
+QColor DepthAxis::colorForValue(double) const
 {
 	return QColor(Qt::red);
 }
 
-DepthAxis::DepthAxis(ProfileWidget2 *widget) : DiveCartesianAxis(widget)
+DepthAxis::DepthAxis(ProfileWidget2 *widget) : DiveCartesianAxis(widget),
+	unitSystem(prefs.units.length)
 {
-#ifndef SUBSURFACE_MOBILE
-	connect(PreferencesDialog::instance(), SIGNAL(settingsChanged()), this, SLOT(settingsChanged()));
-#endif
+	connect(&diveListNotifier, &DiveListNotifier::settingsChanged, this, &DepthAxis::settingsChanged);
 	changed = true;
-	settingsChanged();
 }
 
 void DepthAxis::settingsChanged()
 {
-	static int unitSystem = prefs.units.length;
-	if ( unitSystem == prefs.units.length )
+	if (unitSystem == prefs.units.length)
 		return;
 	changed = true;
 	updateTicks();
@@ -386,12 +381,12 @@ TimeAxis::TimeAxis(ProfileWidget2 *widget) : DiveCartesianAxis(widget)
 {
 }
 
-QColor TimeAxis::colorForValue(double)
+QColor TimeAxis::colorForValue(double) const
 {
 	return QColor(Qt::blue);
 }
 
-QString TimeAxis::textForValue(double value)
+QString TimeAxis::textForValue(double value) const
 {
 	int nr = lrint(value) / 60;
 	if (maximum() < 600)
@@ -413,41 +408,32 @@ TemperatureAxis::TemperatureAxis(ProfileWidget2 *widget) : DiveCartesianAxis(wid
 {
 }
 
-QString TemperatureAxis::textForValue(double value)
+QString TemperatureAxis::textForValue(double value) const
 {
 	return QString::number(mkelvin_to_C((int)value));
 }
 
-PartialGasPressureAxis::PartialGasPressureAxis(ProfileWidget2 *widget) :
+PartialGasPressureAxis::PartialGasPressureAxis(const DivePlotDataModel &model, ProfileWidget2 *widget) :
 	DiveCartesianAxis(widget),
-	model(NULL)
+	model(model)
 {
-#ifndef SUBSURFACE_MOBILE
-	connect(PreferencesDialog::instance(), SIGNAL(settingsChanged()), this, SLOT(settingsChanged()));
-#endif
+	connect(&diveListNotifier, &DiveListNotifier::settingsChanged, this, &PartialGasPressureAxis::update);
 }
 
-void PartialGasPressureAxis::setModel(DivePlotDataModel *m)
-{
-	model = m;
-	connect(model, SIGNAL(dataChanged(QModelIndex, QModelIndex)), this, SLOT(settingsChanged()));
-	settingsChanged();
-}
-
-void PartialGasPressureAxis::settingsChanged()
+void PartialGasPressureAxis::update()
 {
 	bool showPhe = prefs.pp_graphs.phe;
 	bool showPn2 = prefs.pp_graphs.pn2;
 	bool showPo2 = prefs.pp_graphs.po2;
 	setVisible(showPhe || showPn2 || showPo2);
-	if (!model->rowCount())
+	if (!model.rowCount())
 		return;
 
-	double max = showPhe ? model->pheMax() : -1;
-	if (showPn2 && model->pn2Max() > max)
-		max = model->pn2Max();
-	if (showPo2 && model->po2Max() > max)
-		max = model->po2Max();
+	double max = showPhe ? model.pheMax() : -1;
+	if (showPn2 && model.pn2Max() > max)
+		max = model.pn2Max();
+	if (showPo2 && model.po2Max() > max)
+		max = model.po2Max();
 
 	qreal pp = floor(max * 10.0) / 10.0 + 0.2;
 	if (IS_FP_SAME(maximum(), pp))

@@ -1,4 +1,4 @@
-name: Ubuntu 18.04 / Qt 5.9
+name: Ubuntu 18.04 / Qt 5.9--
 on:
   push:
     branches:
@@ -29,7 +29,7 @@ jobs:
         qml-module-qtquick2 qt5-default qt5-qmake qtchooser qtconnectivity5-dev \
         qtdeclarative5-dev qtdeclarative5-private-dev qtlocation5-dev \
         qtpositioning5-dev qtscript5-dev qttools5-dev qttools5-dev-tools \
-        qtquickcontrols2-5-dev xvfb
+        qtquickcontrols2-5-dev xvfb libbluetooth-dev libmtp-dev
 
     - name: build Subsurface
       run: |
@@ -41,5 +41,6 @@ jobs:
         # and now run the tests - with Qt 5.9 we can only run the desktop flavor
         echo "------------------------------------"
         echo "run tests"
-        cd build
+        cd build/tests
+        # xvfb-run --auto-servernum ./TestGitStorage -v2
         xvfb-run --auto-servernum make check

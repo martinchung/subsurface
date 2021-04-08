@@ -24,7 +24,6 @@ IconMetrics::IconMetrics() :
 QFont defaultModelFont()
 {
 	QFont font;
-//	font.setPointSizeF(font.pointSizeF() * 0.8);
 	return font;
 }
 
@@ -44,7 +43,7 @@ static int defaultIconSize(int height)
 	return ret;
 }
 
-const IconMetrics & defaultIconMetrics()
+const IconMetrics &defaultIconMetrics()
 {
 	if (dfltIconMetrics.sz_small == -1) {
 		int small = defaultIconSize(defaultModelFontMetrics().height());

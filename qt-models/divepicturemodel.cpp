@@ -5,6 +5,7 @@
 #include "core/imagedownloader.h"
 #include "core/picture.h"
 #include "core/qthelper.h"
+#include "core/selection.h"
 #include "core/subsurface-qt/divelistnotifier.h"
 #include "commands/command.h"
 
@@ -87,19 +88,15 @@ void DivePictureModel::updateDivePictures()
 		Thumbnailer::instance()->clearWorkQueue();
 	}
 
-	int i;
-	struct dive *dive;
-	for_each_dive (i, dive) {
-		if (dive->selected) {
-			size_t first = pictures.size();
-			FOR_EACH_PICTURE(dive)
-				pictures.push_back(PictureEntry(dive, *picture));
+	for (struct dive *dive: getDiveSelection()) {
+		size_t first = pictures.size();
+		FOR_EACH_PICTURE(dive)
+			pictures.push_back(PictureEntry(dive, *picture));
 
-			// Sort pictures of this dive by offset.
-			// Thus, the list will be sorted by (dive, offset).
-			std::sort(pictures.begin() + first, pictures.end(),
-				  [](const PictureEntry &a, const PictureEntry &b) { return a.offsetSeconds < b.offsetSeconds; });
-		}
+		// Sort pictures of this dive by offset.
+		// Thus, the list will be sorted by (dive, offset).
+		std::sort(pictures.begin() + first, pictures.end(),
+			  [](const PictureEntry &a, const PictureEntry &b) { return a.offsetSeconds < b.offsetSeconds; });
 	}
 
 	updateThumbnails();
@@ -196,7 +193,6 @@ void DivePictureModel::picturesRemoved(dive *d, QVector<QString> filenamesIn)
 		endRemoveRows();
 		toIdx -= j - i;
 	}
-	copy_dive(current_dive, &displayed_dive); // TODO: Remove once displayed_dive is moved to the planner
 }
 
 // Assumes that pics is sorted!
@@ -309,7 +305,6 @@ void DivePictureModel::pictureOffsetChanged(dive *d, const QString filenameIn, o
 
 	// Update the offset here and in the backend
 	oldPos->offsetSeconds = offset.seconds;
-	copy_dive(current_dive, &displayed_dive); // TODO: remove once profile can display arbitrary dives
 
 	// Henceforth we will work with indices instead of iterators
 	int oldIndex = oldPos - pictures.begin();

@@ -7,6 +7,7 @@
 #include "qt-models/models.h"
 #include "core/device.h"
 #include "core/qthelper.h"
+#include "core/sample.h"
 #include "core/settings/qPrefDivePlanner.h"
 #include "core/settings/qPrefUnit.h"
 #if !defined(SUBSURFACE_TESTING)
@@ -27,43 +28,52 @@ CylindersModel *DivePlannerPointsModel::cylindersModel()
 	return &cylinders;
 }
 
-/* TODO: Port this to CleanerTableModel to remove a bit of boilerplate. */
-void DivePlannerPointsModel::removeSelectedPoints(const QVector<int> &rows)
+void DivePlannerPointsModel::removePoints(const QVector<int> &rows)
 {
 	if (!rows.count())
 		return;
-	int firstRow = rowCount() - rows.count();
 	QVector<int> v2 = rows;
 	std::sort(v2.begin(), v2.end());
 
-	beginRemoveRows(QModelIndex(), firstRow, rowCount() - 1);
 	for (int i = v2.count() - 1; i >= 0; i--) {
-		divepoints.remove(v2[i]);
+		beginRemoveRows(QModelIndex(), v2[i], v2[i]);
+		divepoints.erase(divepoints.begin() + v2[i]);
+		endRemoveRows();
 	}
-	endRemoveRows();
+}
+
+void DivePlannerPointsModel::removeSelectedPoints(const QVector<int> &rows)
+{
+	removePoints(rows);
+
+	updateDiveProfile();
+	emitDataChanged();
 	cylinders.updateTrashIcon();
 }
 
-void DivePlannerPointsModel::createSimpleDive()
+void DivePlannerPointsModel::createSimpleDive(struct dive *dIn)
 {
 	// clean out the dive and give it an id and the correct dc model
-	clear_dive(&displayed_dive);
-	displayed_dive.id = dive_getUniqID();
-	displayed_dive.when = QDateTime::currentMSecsSinceEpoch() / 1000L + gettimezoneoffset() + 3600;
-	displayed_dive.dc.model = strdup("planned dive"); // don't translate! this is stored in the XML file
+	d = dIn;
+	clear_dive(d);
+	d->id = dive_getUniqID();
+	d->when = QDateTime::currentMSecsSinceEpoch() / 1000L + gettimezoneoffset() + 3600;
+	d->dc.model = strdup("planned dive"); // don't translate! this is stored in the XML file
 
 	clear();
+	removeDeco();
 	setupCylinders();
 	setupStartTime();
 
 	// initialize the start time in the plan
-	diveplan.when = displayed_dive.when;
+	diveplan.when = dateTimeToTimestamp(startTime);
+	d->when = diveplan.when;
 
 	// Use gas from the first cylinder
 	int cylinderid = 0;
 
 	// If we're in drop_stone_mode, don't add a first point.
-	// It will be added implicit.
+	// It will be added implicitly.
 	if (!prefs.drop_stone_mode)
 		addStop(M_OR_FT(15, 45), 1 * 60, cylinderid, 0, true, UNDEF_COMP_TYPE);
 
@@ -72,7 +82,7 @@ void DivePlannerPointsModel::createSimpleDive()
 		addStop(M_OR_FT(5, 15), 42 * 60, 0, cylinderid, true, UNDEF_COMP_TYPE);
 		addStop(M_OR_FT(5, 15), 45 * 60, 0, cylinderid, true, UNDEF_COMP_TYPE);
 	}
-	updateMaxDepth();
+	updateDiveProfile();
 	GasSelectionModel::instance()->repopulate();
 	DiveTypeSelectionModel::instance()->repopulate();
 }
@@ -90,26 +100,27 @@ void DivePlannerPointsModel::setupStartTime()
 			startTime = startTime.addSecs(diff + 3600);
 		}
 	}
-	emit startTimeChanged(startTime);
 }
 
-void DivePlannerPointsModel::loadFromDive(dive *d)
+void DivePlannerPointsModel::loadFromDive(dive *dIn)
 {
+	d = dIn;
+
 	int depthsum = 0;
 	int samplecount = 0;
 	o2pressure_t last_sp;
-	bool oldRec = recalc;
 	struct divecomputer *dc = &(d->dc);
 	const struct event *evd = NULL;
 	enum divemode_t current_divemode = UNDEF_COMP_TYPE;
-	recalc = false;
-	cylinders.updateDive(&displayed_dive);
+	cylinders.updateDive(d);
 	duration_t lasttime = { 0 };
 	duration_t lastrecordedtime = {};
 	duration_t newtime = {};
+
+	clear();
+	removeDeco();
 	free_dps(&diveplan);
-	if (mode != PLAN)
-		clear();
+
 	diveplan.when = d->when;
 	// is this a "new" dive where we marked manually entered samples?
 	// if yes then the first sample should be marked
@@ -128,6 +139,7 @@ void DivePlannerPointsModel::loadFromDive(dive *d)
 	int plansamples = dc->samples <= 100 ? dc->samples : 100;
 	int j = 0;
 	int cylinderid = 0;
+
 	last_sp.mbar = 0;
 	for (int i = 0; i < plansamples - 1; i++) {
 		if (dc->last_manual_time.seconds && dc->last_manual_time.seconds > 120 && lasttime.seconds >= dc->last_manual_time.seconds)
@@ -145,7 +157,11 @@ void DivePlannerPointsModel::loadFromDive(dive *d)
 		}
 		if (samplecount) {
 			cylinderid = get_cylinderid_at_time(d, dc, lasttime);
-			if (newtime.seconds - lastrecordedtime.seconds > 10) {
+			duration_t nexttime = newtime;
+			++nexttime.seconds;
+			if (newtime.seconds - lastrecordedtime.seconds > 10 || cylinderid == get_cylinderid_at_time(d, dc, nexttime)) {
+				if (newtime.seconds == lastrecordedtime.seconds)
+					newtime.seconds += 10;
 				current_divemode = get_current_divemode(dc, newtime.seconds - 1, &evd, &current_divemode);
 				addStop(depthsum / samplecount, newtime.seconds, cylinderid, last_sp.mbar, true, current_divemode);
 				lastrecordedtime = newtime;
@@ -159,9 +175,10 @@ void DivePlannerPointsModel::loadFromDive(dive *d)
 	current_divemode = get_current_divemode(dc, d->dc.duration.seconds, &evd, &current_divemode);
 	if (!hasMarkedSamples && !dc->last_manual_time.seconds)
 		addStop(0, d->dc.duration.seconds,cylinderid, last_sp.mbar, true, current_divemode);
-	recalc = oldRec;
 	DiveTypeSelectionModel::instance()->repopulate();
 	preserved_until = d->duration;
+
+	updateDiveProfile();
 	emitDataChanged();
 }
 
@@ -170,56 +187,55 @@ void DivePlannerPointsModel::loadFromDive(dive *d)
 // setup the cylinder widget accordingly
 void DivePlannerPointsModel::setupCylinders()
 {
-	clear_cylinder_table(&displayed_dive.cylinders);
+	clear_cylinder_table(&d->cylinders);
 	if (mode == PLAN && current_dive) {
 		// take the displayed cylinders from the selected dive as starting point
-		copy_used_cylinders(current_dive, &displayed_dive, !prefs.display_unused_tanks);
-		reset_cylinders(&displayed_dive, true);
+		copy_used_cylinders(current_dive, d, !prefs.display_unused_tanks);
+		reset_cylinders(d, true);
 
-		if (displayed_dive.cylinders.nr > 0) {
-			cylinders.updateDive(&displayed_dive);
+		if (d->cylinders.nr > 0) {
+			cylinders.updateDive(d);
 			return;		// We have at least one cylinder
 		}
 	}
 	if (!empty_string(prefs.default_cylinder)) {
 		cylinder_t cyl = empty_cylinder;
-		fill_default_cylinder(&displayed_dive, &cyl);
+		fill_default_cylinder(d, &cyl);
 		cyl.start = cyl.type.workingpressure;
-		add_cylinder(&displayed_dive.cylinders, 0, cyl);
+		add_cylinder(&d->cylinders, 0, cyl);
 	} else {
 		cylinder_t cyl = empty_cylinder;
 		// roughly an AL80
 		cyl.type.description = copy_qstring(tr("unknown"));
 		cyl.type.size.mliter = 11100;
 		cyl.type.workingpressure.mbar = 207000;
-		add_cylinder(&displayed_dive.cylinders, 0, cyl);
+		add_cylinder(&d->cylinders, 0, cyl);
 	}
-	reset_cylinders(&displayed_dive, false);
-	cylinders.updateDive(&displayed_dive);
+	reset_cylinders(d, false);
+	cylinders.updateDive(d);
 }
 
 // Update the dive's maximum depth.  Returns true if max. depth changed
 bool DivePlannerPointsModel::updateMaxDepth()
 {
-	int prevMaxDepth = displayed_dive.maxdepth.mm;
-	displayed_dive.maxdepth.mm = 0;
+	int prevMaxDepth = d->maxdepth.mm;
+	d->maxdepth.mm = 0;
 	for (int i = 0; i < rowCount(); i++) {
 		divedatapoint p = at(i);
-		if (p.depth.mm > displayed_dive.maxdepth.mm)
-			displayed_dive.maxdepth.mm = p.depth.mm;
+		if (p.depth.mm > d->maxdepth.mm)
+			d->maxdepth.mm = p.depth.mm;
 	}
-	return displayed_dive.maxdepth.mm != prevMaxDepth;
+	return d->maxdepth.mm != prevMaxDepth;
 }
 
 void DivePlannerPointsModel::removeDeco()
 {
-	bool oldrec = setRecalc(false);
 	QVector<int> computedPoints;
-	for (int i = 0; i < rowCount(); i++)
+	for (int i = 0; i < rowCount(); i++) {
 		if (!at(i).entered)
 			computedPoints.push_back(i);
-	removeSelectedPoints(computedPoints);
-	setRecalc(oldrec);
+	}
+	removePoints(computedPoints);
 }
 
 void DivePlannerPointsModel::addCylinder_clicked()
@@ -238,24 +254,9 @@ void DivePlannerPointsModel::setPlanMode(Mode m)
 	}
 }
 
-bool DivePlannerPointsModel::isPlanner()
+bool DivePlannerPointsModel::isPlanner() const
 {
 	return mode == PLAN;
-}
-
-/* When the planner adds deco stops to the model, adding those should not trigger a new deco calculation.
- * We thus start the planner only when recalc is true. */
-
-bool DivePlannerPointsModel::setRecalc(bool rec)
-{
-	bool old = recalc;
-	recalc = rec;
-	return old;
-}
-
-bool DivePlannerPointsModel::recalcQ()
-{
-	return recalc;
 }
 
 int DivePlannerPointsModel::columnCount(const QModelIndex&) const
@@ -284,13 +285,13 @@ QVariant DivePlannerPointsModel::data(const QModelIndex &index, int role) const
 		case GAS:
 			/* Check if we have the same gasmix two or more times
 			 * If yes return more verbose string */
-			int same_gas = same_gasmix_cylinder(get_cylinder(&displayed_dive, p.cylinderid), p.cylinderid, &displayed_dive, true);
+			int same_gas = same_gasmix_cylinder(get_cylinder(d, p.cylinderid), p.cylinderid, d, true);
 			if (same_gas == -1)
-				return get_gas_string(get_cylinder(&displayed_dive, p.cylinderid)->gasmix);
+				return get_gas_string(get_cylinder(d, p.cylinderid)->gasmix);
 			else
-				return get_gas_string(get_cylinder(&displayed_dive, p.cylinderid)->gasmix) +
+				return get_gas_string(get_cylinder(d, p.cylinderid)->gasmix) +
 					QString(" (%1 %2 ").arg(tr("cyl.")).arg(p.cylinderid + 1) +
-						get_cylinder(&displayed_dive, p.cylinderid)->type.description + ")";
+						get_cylinder(d, p.cylinderid)->type.description + ")";
 		}
 	} else if (role == Qt::DecorationRole) {
 		switch (index.column()) {
@@ -333,24 +334,41 @@ bool DivePlannerPointsModel::setData(const QModelIndex &index, const QVariant &v
 					cylinders.updateBestMixes();
 			}
 			break;
-		case RUNTIME:
-			p.time = value.toInt() * 60;
-			break;
-		case DURATION:
+		case RUNTIME: {
+			int secs = value.toInt() * 60;
 			i = index.row();
+			int duration = secs;
 			if (i)
-				shift = divepoints[i].time - divepoints[i - 1].time - value.toInt() * 60;
-			else
-				shift = divepoints[i].time - value.toInt() * 60;
-			while (i < divepoints.size())
-				divepoints[i++].time -= shift;
+				duration -= divepoints[i-1].time;
+			// Make sure segments have a minimal duration
+			if (duration <= 0)
+				secs += 10 - duration;
+			p.time = secs;
+			while (++i < divepoints.size())
+				if (divepoints[i].time < divepoints[i - 1].time + 10)
+					divepoints[i].time = divepoints[i - 1].time + 10;
 			break;
+		}
+		case DURATION: {
+				int secs = value.toInt() * 60;
+				if (!secs)
+					secs = 10;
+				i = index.row();
+				if (i)
+					shift = divepoints[i].time - divepoints[i - 1].time - secs;
+				else
+					shift = divepoints[i].time - secs;
+				while (i < divepoints.size())
+					divepoints[i++].time -= shift;
+				break;
+		}
 		case CCSETPOINT: {
 			int po2 = 0;
 			QByteArray gasv = value.toByteArray();
 			if (validate_po2(gasv.data(), &po2))
 				p.setpoint = po2;
-		} break;
+			break;
+		}
 		case GAS:
 			if (value.toInt() >= 0)
 				p.cylinderid = value.toInt();
@@ -365,7 +383,7 @@ bool DivePlannerPointsModel::setData(const QModelIndex &index, const QVariant &v
 				p.setpoint = p.divemode == CCR ? prefs.defaultsetpoint : 0;
 			}
 			if (index.row() == 0)
-				displayed_dive.dc.divemode = (enum divemode_t) value.toInt();
+				d->dc.divemode = (enum divemode_t) value.toInt();
 			break;
 		}
 		editStop(index.row(), p);
@@ -427,9 +445,9 @@ int DivePlannerPointsModel::rowCount(const QModelIndex&) const
 }
 
 DivePlannerPointsModel::DivePlannerPointsModel(QObject *parent) : QAbstractTableModel(parent),
+	d(nullptr),
 	cylinders(true),
-	mode(NOTHING),
-	recalc(false)
+	mode(NOTHING)
 {
 	memset(&diveplan, 0, sizeof(diveplan));
 	startTime.setTimeSpec(Qt::UTC);
@@ -516,8 +534,8 @@ void DivePlannerPointsModel::setGFLow(const int gflow)
 void DivePlannerPointsModel::setRebreatherMode(int mode)
 {
 	int i;
-	displayed_dive.dc.divemode = (divemode_t) mode;
-	for (i=0; i < rowCount(); i++) {
+	d->dc.divemode = (divemode_t) mode;
+	for (i = 0; i < rowCount(); i++) {
 		divepoints[i].setpoint = mode == CCR ? prefs.defaultsetpoint : 0;
 		divepoints[i].divemode = (enum divemode_t) mode;
 	}
@@ -544,7 +562,7 @@ void DivePlannerPointsModel::setSalinity(int salinity)
 	emitDataChanged();
 }
 
-int DivePlannerPointsModel::getSurfacePressure()
+int DivePlannerPointsModel::getSurfacePressure() const
 {
 	return diveplan.surface_pressure;
 }
@@ -560,7 +578,7 @@ void DivePlannerPointsModel::setAscrate75Display(int rate)
 	qPrefDivePlanner::set_ascrate75(lrint(rate * UNIT_FACTOR));
 	emitDataChanged();
 }
-int DivePlannerPointsModel::ascrate75Display()
+int DivePlannerPointsModel::ascrate75Display() const
 {
 	return lrint((float)prefs.ascrate75 / UNIT_FACTOR);
 }
@@ -570,7 +588,7 @@ void DivePlannerPointsModel::setAscrate50Display(int rate)
 	qPrefDivePlanner::set_ascrate50(lrint(rate * UNIT_FACTOR));
 	emitDataChanged();
 }
-int DivePlannerPointsModel::ascrate50Display()
+int DivePlannerPointsModel::ascrate50Display() const
 {
 	return lrint((float)prefs.ascrate50 / UNIT_FACTOR);
 }
@@ -580,7 +598,7 @@ void DivePlannerPointsModel::setAscratestopsDisplay(int rate)
 	qPrefDivePlanner::set_ascratestops(lrint(rate * UNIT_FACTOR));
 	emitDataChanged();
 }
-int DivePlannerPointsModel::ascratestopsDisplay()
+int DivePlannerPointsModel::ascratestopsDisplay() const
 {
 	return lrint((float)prefs.ascratestops / UNIT_FACTOR);
 }
@@ -590,7 +608,7 @@ void DivePlannerPointsModel::setAscratelast6mDisplay(int rate)
 	qPrefDivePlanner::set_ascratelast6m(lrint(rate * UNIT_FACTOR));
 	emitDataChanged();
 }
-int DivePlannerPointsModel::ascratelast6mDisplay()
+int DivePlannerPointsModel::ascratelast6mDisplay() const
 {
 	return lrint((float)prefs.ascratelast6m / UNIT_FACTOR);
 }
@@ -600,7 +618,7 @@ void DivePlannerPointsModel::setDescrateDisplay(int rate)
 	qPrefDivePlanner::set_descrate(lrint(rate * UNIT_FACTOR));
 	emitDataChanged();
 }
-int DivePlannerPointsModel::descrateDisplay()
+int DivePlannerPointsModel::descrateDisplay() const
 {
 	return lrint((float)prefs.descrate / UNIT_FACTOR);
 }
@@ -701,30 +719,42 @@ void DivePlannerPointsModel::setStartDate(const QDate &date)
 {
 	startTime.setDate(date);
 	diveplan.when = dateTimeToTimestamp(startTime);
-	displayed_dive.when = diveplan.when;
+	d->when = diveplan.when;
 	emitDataChanged();
 }
 
 void DivePlannerPointsModel::setStartTime(const QTime &t)
 {
 	startTime.setTime(t);
-		diveplan.when = dateTimeToTimestamp(startTime);
-	displayed_dive.when = diveplan.when;
+	diveplan.when = dateTimeToTimestamp(startTime);
+	d->when = diveplan.when;
 	emitDataChanged();
 }
-
 
 bool divePointsLessThan(const divedatapoint &p1, const divedatapoint &p2)
 {
 	return p1.time < p2.time;
 }
 
-int DivePlannerPointsModel::lastEnteredPoint()
+int DivePlannerPointsModel::lastEnteredPoint() const
 {
 	for (int i = divepoints.count() - 1; i >= 0; i--)
 		if (divepoints.at(i).entered)
 			return i;
 	return -1;
+}
+
+void DivePlannerPointsModel::addDefaultStop()
+{
+	removeDeco();
+	addStop(0, 0, -1, 0, true, UNDEF_COMP_TYPE);
+}
+
+void DivePlannerPointsModel::addStop(int milimeters, int seconds)
+{
+	removeDeco();
+	addStop(milimeters, seconds, -1, 0, true, UNDEF_COMP_TYPE);
+	updateDiveProfile();
 }
 
 // cylinderid_in == -1 means same gas as before.
@@ -737,8 +767,6 @@ int DivePlannerPointsModel::addStop(int milimeters, int seconds, int cylinderid_
 		cylinderid = cylinderid_in;
 	else
 		usePrevious = true;
-	if (recalcQ())
-		removeDeco();
 
 	int row = divepoints.count();
 	if (seconds == 0 && milimeters == 0 && row != 0) {
@@ -786,7 +814,7 @@ int DivePlannerPointsModel::addStop(int milimeters, int seconds, int cylinderid_
 		}
 	}
 	if (divemode == UNDEF_COMP_TYPE)
-		divemode = displayed_dive.dc.divemode;
+		divemode = d->dc.divemode;
 
 	// add the new stop
 	beginInsertRows(QModelIndex(), row, row);
@@ -798,36 +826,72 @@ int DivePlannerPointsModel::addStop(int milimeters, int seconds, int cylinderid_
 	point.entered = entered;
 	point.divemode = divemode;
 	point.next = NULL;
-	divepoints.append(point);
-	std::sort(divepoints.begin(), divepoints.end(), divePointsLessThan);
+	divepoints.insert(divepoints.begin() + row, point);
 	endInsertRows();
 	return row;
 }
 
 void DivePlannerPointsModel::editStop(int row, divedatapoint newData)
 {
+	if (row < 0 || row >= divepoints.count())
+		return;
+
+	// Refuse to move to 0, since that has special meaning.
+	if (newData.time <= 0)
+		return;
+
 	/*
 	 * When moving divepoints rigorously, we might end up with index
 	 * out of range, thus returning the last one instead.
 	 */
 	int old_first_cylid = divepoints[0].cylinderid;
-	if (row >= divepoints.count())
-		return;
+
+	// Refuse creation of two points with the same time stamp.
+	// Note: "time" is moved in the positive direction to avoid
+	// time becoming zero or, worse, negative.
+	while (std::any_of(divepoints.begin(), divepoints.begin() + row,
+			[t = newData.time] (const divedatapoint &data)
+			{ return data.time == t; }))
+		newData.time += 10;
+	while (std::any_of(divepoints.begin() + row + 1, divepoints.end(),
+			[t = newData.time] (const divedatapoint &data)
+			{ return data.time == t; }))
+		newData.time += 10;
+
+	// Is it ok to change data first and then move the rows?
 	divepoints[row] = newData;
-	std::sort(divepoints.begin(), divepoints.end(), divePointsLessThan);
+
+	// If the time changed, the item might have to be moved. Oh joy.
+	int newRow = row;
+	while (newRow + 1 < divepoints.count() && divepoints[newRow + 1].time < divepoints[row].time)
+		++newRow;
+	if (newRow != row) {
+		++newRow; // Move one past item with smaller time stamp
+	} else {
+		// If we didn't move forward, try moving backwards
+		while (newRow > 0 && divepoints[newRow - 1].time > divepoints[row].time)
+			--newRow;
+	}
+
+	if (newRow != row && newRow != row + 1) {
+		beginMoveRows(QModelIndex(), row, row, QModelIndex(), newRow);
+		moveInVector(divepoints, row, row + 1, newRow);
+		endMoveRows();
+
+		// Account for moving the row backwards in the array.
+		row = newRow > row ? newRow - 1 : newRow;
+	}
+
 	if (updateMaxDepth())
 		cylinders.updateBestMixes();
 	if (divepoints[0].cylinderid != old_first_cylid)
 		cylinders.moveAtFirst(divepoints[0].cylinderid);
-	emitDataChanged();
+
+	updateDiveProfile();
+	emit dataChanged(createIndex(row, 0), createIndex(row, COLUMNS - 1));
 }
 
-int DivePlannerPointsModel::size()
-{
-	return divepoints.size();
-}
-
-divedatapoint DivePlannerPointsModel::at(int row)
+divedatapoint DivePlannerPointsModel::at(int row) const
 {
 	/*
 	 * When moving divepoints rigorously, we might end up with index
@@ -838,9 +902,43 @@ divedatapoint DivePlannerPointsModel::at(int row)
 	return divepoints.at(row);
 }
 
+void DivePlannerPointsModel::removeControlPressed(const QModelIndex &index)
+{
+	// Never delete all points.
+	int rows = rowCount();
+	if (index.column() != REMOVE || index.row() <= 0 || index.row() >= rows)
+		return;
+
+	int old_first_cylid = divepoints[0].cylinderid;
+
+	preserved_until.seconds = divepoints.at(index.row()).time;
+	beginRemoveRows(QModelIndex(), index.row(), rows - 1);
+	divepoints.erase(divepoints.begin() + index.row(), divepoints.end());
+	endRemoveRows();
+
+	cylinders.updateTrashIcon();
+	if (divepoints[0].cylinderid != old_first_cylid)
+		cylinders.moveAtFirst(divepoints[0].cylinderid);
+
+	updateDiveProfile();
+	emitDataChanged();
+}
+
 void DivePlannerPointsModel::remove(const QModelIndex &index)
 {
-	if (index.column() != REMOVE || rowCount() == 1)
+/* TODO: this seems so wrong.
+ * We can't do this here if we plan to use QML on mobile
+ * as mobile has no ControlModifier.
+ * The correct thing to do is to create a new method
+ * remove method that will pass the first and last index of the
+ * removed rows, and remove those in a go.
+ */
+	if (QApplication::keyboardModifiers() & Qt::ControlModifier)
+		return removeControlPressed(index);
+
+	// Refuse deleting the last point.
+	int rows = rowCount();
+	if (index.column() != REMOVE || index.row() < 0 || index.row() >= rows || rows <= 1)
 		return;
 
 	divedatapoint dp = at(index.row());
@@ -849,30 +947,18 @@ void DivePlannerPointsModel::remove(const QModelIndex &index)
 
 	int old_first_cylid = divepoints[0].cylinderid;
 
-/* TODO: this seems so wrong.
- * We can't do this here if we plan to use QML on mobile
- * as mobile has no ControlModifier.
- * The correct thing to do is to create a new method
- * remove method that will pass the first and last index of the
- * removed rows, and remove those in a go.
- */
-	int i;
-	int rows = rowCount();
-	if (QApplication::keyboardModifiers() & Qt::ControlModifier) {
-		preserved_until.seconds = divepoints.at(index.row()).time;
-		beginRemoveRows(QModelIndex(), index.row(), rows - 1);
-		for (i = rows - 1; i >= index.row(); i--)
-			divepoints.remove(i);
-	} else {
-		if (index.row() == rows -1)
-			preserved_until.seconds = divepoints.at(rows - 1).time;
-		beginRemoveRows(QModelIndex(), index.row(), index.row());
-		divepoints.remove(index.row());
-	}
+	if (index.row() == rows)
+		preserved_until.seconds = divepoints.at(rows - 1).time;
+	beginRemoveRows(QModelIndex(), index.row(), index.row());
+	divepoints.remove(index.row());
 	endRemoveRows();
+
 	cylinders.updateTrashIcon();
 	if (divepoints[0].cylinderid != old_first_cylid)
 		cylinders.moveAtFirst(divepoints[0].cylinderid);
+
+	updateDiveProfile();
+	emitDataChanged();
 }
 
 struct diveplan &DivePlannerPointsModel::getDiveplan()
@@ -909,10 +995,10 @@ DivePlannerPointsModel::Mode DivePlannerPointsModel::currentMode() const
 	return mode;
 }
 
-bool DivePlannerPointsModel::tankInUse(int cylinderid)
+bool DivePlannerPointsModel::tankInUse(int cylinderid) const
 {
 	for (int j = 0; j < rowCount(); j++) {
-		divedatapoint &p = divepoints[j];
+		const divedatapoint &p = divepoints[j];
 		if (p.time == 0) // special entries that hold the available gases
 			continue;
 		if (!p.entered) // removing deco gases is ok
@@ -925,17 +1011,11 @@ bool DivePlannerPointsModel::tankInUse(int cylinderid)
 
 void DivePlannerPointsModel::clear()
 {
-	bool oldRecalc = setRecalc(false);
-
-	cylinders.updateDive(&displayed_dive);
-	if (rowCount() > 0) {
-		beginRemoveRows(QModelIndex(), 0, rowCount() - 1);
-		divepoints.clear();
-		endRemoveRows();
-	}
 	cylinders.clear();
 	preserved_until.seconds = 0;
-	setRecalc(oldRecalc);
+	beginResetModel();
+	divepoints.clear();
+	endResetModel();
 }
 
 void DivePlannerPointsModel::createTemporaryPlan()
@@ -956,11 +1036,9 @@ void DivePlannerPointsModel::createTemporaryPlan()
 			plan_add_segment(&diveplan, deltaT, p.depth.mm, p.cylinderid, p.setpoint, true, p.divemode);
 	}
 
-	// what does the cache do???
-	struct deco_state *cache = NULL;
 	struct divedatapoint *dp = NULL;
-	for (int i = 0; i < displayed_dive.cylinders.nr; i++) {
-		cylinder_t *cyl = get_cylinder(&displayed_dive, i);
+	for (int i = 0; i < d->cylinders.nr; i++) {
+		cylinder_t *cyl = get_cylinder(d, i);
 		if (cyl->depth.mm && cyl->cylinder_use != NOT_USED) {
 			dp = create_dp(0, cyl->depth.mm, i, 0);
 			if (diveplan.dp) {
@@ -975,14 +1053,29 @@ void DivePlannerPointsModel::createTemporaryPlan()
 #if DEBUG_PLAN
 	dump_plan(&diveplan);
 #endif
-	if (recalcQ() && !diveplan_empty(&diveplan)) {
-		struct decostop stoptable[60];
-		struct deco_state plan_deco_state;
-		struct diveplan *plan_copy;
+}
 
-		memset(&plan_deco_state, 0, sizeof(struct deco_state));
-		plan(&plan_deco_state, &diveplan, &displayed_dive, DECOTIMESTEP, stoptable, &cache, isPlanner(), false);
-		plan_copy = (struct diveplan *)malloc(sizeof(struct diveplan));
+static bool shouldComputeVariations()
+{
+	return prefs.display_variations && decoMode(true) != RECREATIONAL;
+}
+
+void DivePlannerPointsModel::updateDiveProfile()
+{
+	createTemporaryPlan();
+	if (diveplan_empty(&diveplan))
+		return;
+
+	struct deco_state *cache = NULL;
+	struct decostop stoptable[60];
+	struct deco_state plan_deco_state;
+
+	memset(&plan_deco_state, 0, sizeof(struct deco_state));
+	plan(&plan_deco_state, &diveplan, d, DECOTIMESTEP, stoptable, &cache, isPlanner(), false);
+	updateMaxDepth();
+
+	if (isPlanner() && shouldComputeVariations()) {
+		struct diveplan *plan_copy = (struct diveplan *)malloc(sizeof(struct diveplan));
 		lock_planner();
 		cloneDiveplan(&diveplan, plan_copy);
 		unlock_planner();
@@ -995,12 +1088,13 @@ void DivePlannerPointsModel::createTemporaryPlan()
 		computeVariations(plan_copy, &plan_deco_state);
 #endif
 		final_deco_state = plan_deco_state;
-		emit calculatedPlanNotes(QString(displayed_dive.notes));
+		emit calculatedPlanNotes(QString(d->notes));
 	}
+
 	// throw away the cache
 	free(cache);
 #if DEBUG_PLAN
-	save_dive(stderr, &displayed_dive);
+	save_dive(stderr, d);
 	dump_plan(&diveplan);
 #endif
 }
@@ -1020,7 +1114,7 @@ void DivePlannerPointsModel::saveDuplicatePlan()
 	createPlan(true);
 }
 
-struct divedatapoint * DivePlannerPointsModel::cloneDiveplan(struct diveplan *plan_src, struct diveplan *plan_copy)
+struct divedatapoint *DivePlannerPointsModel::cloneDiveplan(struct diveplan *plan_src, struct diveplan *plan_copy)
 {
 	divedatapoint *src, *last_segment;
 	divedatapoint **dp;
@@ -1088,124 +1182,122 @@ void DivePlannerPointsModel::computeVariations(struct diveplan *original_plan, c
 		return;
 
 	struct dive *dive = alloc_dive();
-	copy_dive(&displayed_dive, dive);
+	copy_dive(d, dive);
 	struct decostop original[60], deeper[60], shallower[60], shorter[60], longer[60];
 	struct deco_state *cache = NULL, *save = NULL;
 	struct diveplan plan_copy;
 	struct divedatapoint *last_segment;
 	struct deco_state ds = *previous_ds;
 
-	if (in_planner() && prefs.display_variations && decoMode() != RECREATIONAL) {
-		int my_instance = ++instanceCounter;
-		cache_deco_state(&ds, &save);
+	int my_instance = ++instanceCounter;
+	cache_deco_state(&ds, &save);
 
-		duration_t delta_time = { .seconds = 60 };
-		QString time_units = tr("min");
-		depth_t delta_depth;
-		QString depth_units;
+	duration_t delta_time = { .seconds = 60 };
+	QString time_units = tr("min");
+	depth_t delta_depth;
+	QString depth_units;
 
-		if (prefs.units.length == units::METERS) {
-			delta_depth.mm = 1000; // 1m
-			depth_units = tr("m");
-		} else {
-			delta_depth.mm = feet_to_mm(1.0); // 1ft
-			depth_units = tr("ft");
-		}
-
-		last_segment = cloneDiveplan(original_plan, &plan_copy);
-		if (!last_segment)
-			goto finish;
-		if (my_instance != instanceCounter)
-			goto finish;
-		plan(&ds, &plan_copy, dive, 1, original, &cache, true, false);
-		free_dps(&plan_copy);
-		restore_deco_state(save, &ds, false);
-
-		last_segment = cloneDiveplan(original_plan, &plan_copy);
-		last_segment->depth.mm += delta_depth.mm;
-		last_segment->next->depth.mm += delta_depth.mm;
-		if (my_instance != instanceCounter)
-			goto finish;
-		plan(&ds, &plan_copy, dive, 1, deeper, &cache, true, false);
-		free_dps(&plan_copy);
-		restore_deco_state(save, &ds, false);
-
-		last_segment = cloneDiveplan(original_plan, &plan_copy);
-		last_segment->depth.mm -= delta_depth.mm;
-		last_segment->next->depth.mm -= delta_depth.mm;
-		if (my_instance != instanceCounter)
-			goto finish;
-		plan(&ds, &plan_copy, dive, 1, shallower, &cache, true, false);
-		free_dps(&plan_copy);
-		restore_deco_state(save, &ds, false);
-
-		last_segment = cloneDiveplan(original_plan, &plan_copy);
-		last_segment->next->time += delta_time.seconds;
-		if (my_instance != instanceCounter)
-			goto finish;
-		plan(&ds, &plan_copy, dive, 1, longer, &cache, true, false);
-		free_dps(&plan_copy);
-		restore_deco_state(save, &ds, false);
-
-		last_segment = cloneDiveplan(original_plan, &plan_copy);
-		last_segment->next->time -= delta_time.seconds;
-		if (my_instance != instanceCounter)
-			goto finish;
-		plan(&ds, &plan_copy, dive, 1, shorter, &cache, true, false);
-		free_dps(&plan_copy);
-		restore_deco_state(save, &ds, false);
-
-		char buf[200];
-		sprintf(buf, ", %s: + %d:%02d /%s + %d:%02d /min", qPrintable(tr("Stop times")),
-			FRACTION(analyzeVariations(shallower, original, deeper, qPrintable(depth_units)), 60), qPrintable(depth_units),
-			FRACTION(analyzeVariations(shorter, original, longer, qPrintable(time_units)), 60));
-
-		// By using a signal, we can transport the variations to the main thread.
-		emit variationsComputed(QString(buf));
-#ifdef DEBUG_STOPVAR
-		printf("\n\n");
-#endif
+	if (prefs.units.length == units::METERS) {
+		delta_depth.mm = 1000; // 1m
+		depth_units = tr("m");
+	} else {
+		delta_depth.mm = feet_to_mm(1.0); // 1ft
+		depth_units = tr("ft");
 	}
+
+	last_segment = cloneDiveplan(original_plan, &plan_copy);
+	if (!last_segment)
+		goto finish;
+	if (my_instance != instanceCounter)
+		goto finish;
+	plan(&ds, &plan_copy, dive, 1, original, &cache, true, false);
+	free_dps(&plan_copy);
+	restore_deco_state(save, &ds, false);
+
+	last_segment = cloneDiveplan(original_plan, &plan_copy);
+	last_segment->depth.mm += delta_depth.mm;
+	last_segment->next->depth.mm += delta_depth.mm;
+	if (my_instance != instanceCounter)
+		goto finish;
+	plan(&ds, &plan_copy, dive, 1, deeper, &cache, true, false);
+	free_dps(&plan_copy);
+	restore_deco_state(save, &ds, false);
+
+	last_segment = cloneDiveplan(original_plan, &plan_copy);
+	last_segment->depth.mm -= delta_depth.mm;
+	last_segment->next->depth.mm -= delta_depth.mm;
+	if (my_instance != instanceCounter)
+		goto finish;
+	plan(&ds, &plan_copy, dive, 1, shallower, &cache, true, false);
+	free_dps(&plan_copy);
+	restore_deco_state(save, &ds, false);
+
+	last_segment = cloneDiveplan(original_plan, &plan_copy);
+	last_segment->next->time += delta_time.seconds;
+	if (my_instance != instanceCounter)
+		goto finish;
+	plan(&ds, &plan_copy, dive, 1, longer, &cache, true, false);
+	free_dps(&plan_copy);
+	restore_deco_state(save, &ds, false);
+
+	last_segment = cloneDiveplan(original_plan, &plan_copy);
+	last_segment->next->time -= delta_time.seconds;
+	if (my_instance != instanceCounter)
+		goto finish;
+	plan(&ds, &plan_copy, dive, 1, shorter, &cache, true, false);
+	free_dps(&plan_copy);
+	restore_deco_state(save, &ds, false);
+
+	char buf[200];
+	sprintf(buf, ", %s: + %d:%02d /%s + %d:%02d /min", qPrintable(tr("Stop times")),
+		FRACTION(analyzeVariations(shallower, original, deeper, qPrintable(depth_units)), 60), qPrintable(depth_units),
+		FRACTION(analyzeVariations(shorter, original, longer, qPrintable(time_units)), 60));
+
+	// By using a signal, we can transport the variations to the main thread.
+	emit variationsComputed(QString(buf));
+#ifdef DEBUG_STOPVAR
+	printf("\n\n");
+#endif
 finish:
 	free_dps(original_plan);
 	free(original_plan);
 	free(save);
 	free(cache);
 	free(dive);
-//	setRecalc(oldRecalc);
 }
 
 void DivePlannerPointsModel::computeVariationsDone(QString variations)
 {
-	QString notes = QString(displayed_dive.notes);
-	free(displayed_dive.notes);
-	displayed_dive.notes = copy_qstring(notes.replace("VARIATIONS", variations));
-	emit calculatedPlanNotes(QString(displayed_dive.notes));
+	QString notes = QString(d->notes);
+	free(d->notes);
+	d->notes = copy_qstring(notes.replace("VARIATIONS", variations));
+	emit calculatedPlanNotes(QString(d->notes));
 }
 
 void DivePlannerPointsModel::createPlan(bool replanCopy)
 {
 	// Ok, so, here the diveplan creates a dive
 	struct deco_state *cache = NULL;
-	bool oldRecalc = setRecalc(false);
 	removeDeco();
 	createTemporaryPlan();
-	setRecalc(oldRecalc);
 
 	//TODO: C-based function here?
 	struct decostop stoptable[60];
-	plan(&ds_after_previous_dives, &diveplan, &displayed_dive, DECOTIMESTEP, stoptable, &cache, isPlanner(), true);
-	struct diveplan *plan_copy;
-	plan_copy = (struct diveplan *)malloc(sizeof(struct diveplan));
-	lock_planner();
-	cloneDiveplan(&diveplan, plan_copy);
-	unlock_planner();
-	computeVariations(plan_copy, &ds_after_previous_dives);
+	plan(&ds_after_previous_dives, &diveplan, d, DECOTIMESTEP, stoptable, &cache, isPlanner(), true);
+
+	if (shouldComputeVariations()) {
+		struct diveplan *plan_copy;
+		plan_copy = (struct diveplan *)malloc(sizeof(struct diveplan));
+		lock_planner();
+		cloneDiveplan(&diveplan, plan_copy);
+		unlock_planner();
+		computeVariations(plan_copy, &ds_after_previous_dives);
+	}
 
 	free(cache);
 
 	// Fixup planner notes.
-	if (current_dive && displayed_dive.id == current_dive->id) {
+	if (current_dive && d->id == current_dive->id) {
 		// Try to identify old planner output and remove only this part
 		// Treat user provided text as plain text.
 		QTextDocument notesDocument;
@@ -1231,8 +1323,8 @@ void DivePlannerPointsModel::createPlan(bool replanCopy)
 		}
 		// Deal with line breaks
 		oldnotes.replace("\n", "<br>");
-		oldnotes.append(displayed_dive.notes);
-		displayed_dive.notes = copy_qstring(oldnotes);
+		oldnotes.append(d->notes);
+		d->notes = copy_qstring(oldnotes);
 		// If we save as new create a copy of the dive here
 	}
 
@@ -1241,24 +1333,24 @@ void DivePlannerPointsModel::createPlan(bool replanCopy)
 		       // so that the Undo-commands update the display accordingly (see condition in updateDiveInfo().
 
 	// Now, add or modify the dive.
-	if (!current_dive || displayed_dive.id != current_dive->id) {
+	if (!current_dive || d->id != current_dive->id) {
 		// we were planning a new dive, not re-planning an existing one
-		displayed_dive.divetrip = nullptr; // Should not be necessary, just in case!
+		d->divetrip = nullptr; // Should not be necessary, just in case!
 #if !defined(SUBSURFACE_TESTING)
-		Command::addDive(&displayed_dive, autogroup, true);
+		Command::addDive(d, autogroup, true);
 #endif // !SUBSURFACE_TESTING
 	} else {
-		copy_events_until(current_dive, &displayed_dive, preserved_until.seconds);
+		copy_events_until(current_dive, d, preserved_until.seconds);
 		if (replanCopy) {
 			// we were planning an old dive and save as a new dive
-			displayed_dive.id = dive_getUniqID(); // Things will break horribly if we create dives with the same id.
+			d->id = dive_getUniqID(); // Things will break horribly if we create dives with the same id.
 #if !defined(SUBSURFACE_TESTING)
-			Command::addDive(&displayed_dive, false, false);
+			Command::addDive(d, false, false);
 #endif // !SUBSURFACE_TESTING
 		} else {
 			// we were planning an old dive and rewrite the plan
 #if !defined(SUBSURFACE_TESTING)
-			Command::replanDive(&displayed_dive);
+			Command::replanDive(d);
 #endif // !SUBSURFACE_TESTING
 		}
 	}

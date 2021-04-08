@@ -16,17 +16,17 @@ add_subdirectory(preferences)
 
 set (SUBSURFACE_UI
 	about.ui
+	addfilterpreset.ui
 	btdeviceselectiondialog.ui
 	configuredivecomputerdialog.ui
 	divecomponentselection.ui
-	divecomputermanagementdialog.ui
 	divelogexportdialog.ui
 	divelogimportdialog.ui
 	divesiteimportdialog.ui
 	diveplanner.ui
 	diveshareexportdialog.ui
 	downloadfromdivecomputer.ui
-	filterwidget2.ui
+	filterwidget.ui
 	findmovedimagesdialog.ui
 	importgps.ui
 	listfilter.ui
@@ -40,8 +40,10 @@ set (SUBSURFACE_UI
 	setpoint.ui
 	shiftimagetimes.ui
 	shifttimes.ui
+	statswidget.ui
 	tableview.ui
 	templateedit.ui
+	tripselectiodialog.ui
 	urldialog.ui
 	webservices.ui
 	tab-widgets/maintab.ui
@@ -51,6 +53,7 @@ set (SUBSURFACE_UI
 	tab-widgets/TabDiveExtraInfo.ui
 	tab-widgets/TabDiveEquipment.ui
 	tab-widgets/TabDiveSite.ui
+	tab-widgets/TabDiveComputer.ui
 )
 
 # the interface, in C++
@@ -59,8 +62,6 @@ set(SUBSURFACE_INTERFACE
 	about.h
 	configuredivecomputerdialog.cpp
 	configuredivecomputerdialog.h
-	divecomputermanagementdialog.cpp
-	divecomputermanagementdialog.h
 	divelistview.cpp
 	divelistview.h
 	divelogexportdialog.cpp
@@ -77,8 +78,10 @@ set(SUBSURFACE_INTERFACE
 	divesiteimportdialog.h
 	downloadfromdivecomputer.cpp
 	downloadfromdivecomputer.h
-	filterwidget2.cpp
-	filterwidget2.h
+	filterconstraintwidget.cpp
+	filterconstraintwidget.h
+	filterwidget.cpp
+	filterwidget.h
 	findmovedimagesdialog.cpp
 	findmovedimagesdialog.h
 	groupedlineedit.cpp
@@ -102,6 +105,8 @@ set(SUBSURFACE_INTERFACE
 	simplewidgets.cpp
 	simplewidgets.h
 	starwidget.cpp
+	statswidget.h
+	statswidget.cpp
 	starwidget.h
 	subsurfacewebservices.cpp
 	subsurfacewebservices.h
@@ -119,6 +124,8 @@ set(SUBSURFACE_INTERFACE
 	tab-widgets/TabDiveStatistics.h
 	tab-widgets/TabDiveSite.cpp
 	tab-widgets/TabDiveSite.h
+	tab-widgets/TabDiveComputer.cpp
+	tab-widgets/TabDiveComputer.h
 	tab-widgets/maintab.cpp
 	tab-widgets/maintab.h
 	tableview.cpp
@@ -127,6 +134,8 @@ set(SUBSURFACE_INTERFACE
 	tagwidget.h
 	textedit.cpp
 	textedit.h
+	tripselectiondialog.cpp
+	tripselectiondialog.h
 	updatemanager.cpp
 	updatemanager.h
 )
@@ -164,14 +173,8 @@ source_group("Subsurface Interface" FILES ${SUBSURFACE_INTERFACE})
 
 # the yearly statistics widget.
 set(SUBSURFACE_STATISTICS_LIB_SRCS
-	statistics/monthstatistics.cpp
-	statistics/monthstatistics.h
-	statistics/statisticsbar.cpp
-	statistics/statisticsbar.h
 	statistics/statisticswidget.cpp
 	statistics/statisticswidget.h
-	statistics/yearstatistics.cpp
-	statistics/yearstatistics.h
 )
 source_group("Subsurface Statistics" FILES ${SUBSURFACE_STATISTICS_LIB_SRCS})
 
@@ -182,4 +185,4 @@ target_link_libraries(subsurface_statistics ${QT_LIBRARIES})
 add_library(subsurface_generated_ui STATIC ${SUBSURFACE_UI_HDRS})
 target_link_libraries(subsurface_generated_ui ${QT_LIBRARIES})
 add_library(subsurface_interface STATIC ${SUBSURFACE_INTERFACE} ${SUBSURFACE_UI_SRCS})
-target_link_libraries(subsurface_interface ${QT_LIBRARIES} ${GRANTLEE_LIBRARIES} subsurface_desktop_preferences)
+target_link_libraries(subsurface_interface ${QT_LIBRARIES} subsurface_desktop_preferences)

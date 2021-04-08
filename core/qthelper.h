@@ -5,8 +5,11 @@
 #include <libxslt/transform.h>
 #include <libxslt/xsltutils.h>
 #include "core/pref.h"
+#include "subsurface-time.h"
 
 struct picture;
+struct dive_trip;
+struct xml_params;
 
 // 1) Types
 
@@ -16,16 +19,15 @@ enum watertypes {FRESHWATER, BRACKISHWATER, EN13319WATER, SALTWATER, DC_WATERTYP
 
 #ifdef __cplusplus
 
-#include <QMultiMap>
 #include <QString>
-#include <QTranslator>
-#include <QDir>
 #include "core/gettextfromc.h"
+class QImage;
+
 QString weight_string(int weight_in_grams);
 QString distance_string(int distanceInMeters);
 bool gpsHasChanged(struct dive *dive, struct dive *master, const QString &gps_text, bool *parsed_out = 0);
-QList<int> getDivesInTrip(struct dive_trip *trip);
 QString get_gas_string(struct gasmix gas);
+QStringList get_dive_gas_list(const struct dive *d);
 QString get_taglist_string(struct tag_entry *tag_list);
 QStringList stringToList(const QString &s);
 void read_hashes();
@@ -37,25 +39,27 @@ int getCloudURL(QString &filename);
 bool parseGpsText(const QString &gps_text, double *latitude, double *longitude);
 void init_proxy();
 QString getUUID();
-extern const QStringList waterTypes;
+QStringList getWaterTypesAsString();
 extern const QStringList videoExtensionsList;
 QStringList mediaExtensionFilters();
 QStringList imageExtensionFilters();
 QStringList videoExtensionFilters();
-char *intdup(int index);
 char *copy_qstring(const QString &);
 QString get_depth_string(depth_t depth, bool showunit = false, bool showdecimal = true);
 QString get_depth_string(int mm, bool showunit = false, bool showdecimal = true);
-QString get_depth_unit();
+QString get_depth_unit(bool metric);
+QString get_depth_unit(); // use preferences unit
 QString get_weight_string(weight_t weight, bool showunit = false);
-QString get_weight_unit();
+QString get_weight_unit(bool metric);
+QString get_weight_unit(); // use preferences unit
 QString get_temperature_string(temperature_t temp, bool showunit = false);
-QString get_temp_unit();
+QString get_temp_unit(bool metric);
+QString get_temp_unit(); // use preferences unit
 QString get_volume_string(volume_t volume, bool showunit = false);
 QString get_volume_string(int mliter, bool showunit = false);
-QString get_volume_unit();
+QString get_volume_unit(bool metric);
+QString get_volume_unit(); // use preferences unit
 QString get_pressure_string(pressure_t pressure, bool showunit = false);
-QString get_pressure_unit();
 QString get_salinity_string(int salinity);
 QString get_water_type_string(int salinity);
 QString getSubsurfaceDataPath(QString folderToFind);
@@ -78,7 +82,7 @@ QString get_dive_date_string(timestamp_t when);
 QString get_first_dive_date_string();
 QString get_last_dive_date_string();
 QString get_short_dive_date_string(timestamp_t when);
-QString get_trip_date_string(timestamp_t when, int nr, bool getday);
+QString get_trip_string(const dive_trip *trip);
 QString getUiLanguage();
 void initUiLanguage();
 QLocale getLocale();
@@ -87,6 +91,8 @@ QString getUserAgent();
 QString printGPSCoords(const location_t *loc);
 std::vector<int> get_cylinder_map_for_remove(int count, int n);
 std::vector<int> get_cylinder_map_for_add(int count, int n);
+QImage renderSVGIcon(const char *id, int size, bool transparent);
+QImage renderSVGIconWidth(const char *id, int size);
 
 extern QString (*changesCallback)();
 void uiNotification(const QString &msg);
@@ -131,12 +137,12 @@ extern "C" {
 #endif
 
 char *printGPSCoordsC(const location_t *loc);
-bool in_planner();
 bool getProxyString(char **buffer);
 bool canReachCloudServer();
 void updateWindowTitle();
 void subsurface_mkdir(const char *dir);
 char *get_file_name(const char *fileName);
+void set_filename(const char *filename);
 void copy_image_and_overwrite(const char *cfileName, const char *path, const char *cnewName);
 char *move_away(const char *path);
 const char *local_file_path(struct picture *picture);
@@ -144,9 +150,10 @@ char *cloud_url();
 char *hashfile_name_string();
 char *picturedir_string();
 const char *subsurface_user_agent();
-enum deco_mode decoMode();
-int parse_seabear_header(const char *filename, char **params, int pnr);
+enum deco_mode decoMode(bool in_planner);
+void parse_seabear_header(const char *filename, struct xml_params *params);
 char *get_current_date();
+time_t get_dive_datetime_from_isostring(char *when);
 void print_qt_versions();
 void lock_planner();
 void unlock_planner();

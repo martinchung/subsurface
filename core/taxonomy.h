@@ -39,11 +39,11 @@ struct taxonomy_data {
 	struct taxonomy *category;
 };
 
-struct taxonomy *alloc_taxonomy();
 void free_taxonomy(struct taxonomy_data *t);
-void copy_taxonomy(struct taxonomy_data *orig, struct taxonomy_data *copy);
-int taxonomy_index_for_category(struct taxonomy_data *t, enum taxonomy_category cat);
-const char *taxonomy_get_country(struct taxonomy_data *t);
+void copy_taxonomy(const struct taxonomy_data *orig, struct taxonomy_data *copy);
+const char *taxonomy_get_value(const struct taxonomy_data *t, enum taxonomy_category cat);
+const char *taxonomy_get_country(const struct taxonomy_data *t);
+void taxonomy_set_category(struct taxonomy_data *t, enum taxonomy_category category, const char *value, enum taxonomy_origin origin);
 void taxonomy_set_country(struct taxonomy_data *t, const char *country, enum taxonomy_origin origin);
 
 #ifdef __cplusplus

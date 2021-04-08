@@ -2,126 +2,22 @@
 #include "subsurfacestartup.h"
 #include "subsurface-string.h"
 #include "version.h"
-#include <stdbool.h>
-#include <string.h>
 #include "errorhelper.h"
-#include "dive.h" // for quit and force_root
 #include "gettext.h"
 #include "qthelper.h"
 #include "git-access.h"
+#include "pref.h"
 #include "libdivecomputer/version.h"
 
-struct preferences prefs, git_prefs;
-struct preferences default_prefs = {
-	.cloud_base_url = "https://cloud.subsurface-divelog.org/",
-	.units = SI_UNITS,
-	.unit_system = METRIC,
-	.coordinates_traditional = true,
-	.pp_graphs = {
-		.po2 = false,
-		.pn2 = false,
-		.phe = false,
-		.po2_threshold_min = 0.16,
-		.po2_threshold_max = 1.6,
-		.pn2_threshold = 4.0,
-		.phe_threshold = 13.0,
-	},
-	.mod = false,
-	.modpO2 = 1.6,
-	.ead = false,
-	.hrgraph = false,
-	.percentagegraph = false,
-	.dcceiling = true,
-	.redceiling = false,
-	.calcceiling = false,
-	.calcceiling3m = false,
-	.calcndltts = false,
-	.decoinfo = true,
-	.gflow = 30,
-	.gfhigh = 75,
-	.animation_speed = 500,
-	.gf_low_at_maxdepth = false,
-	.show_ccr_setpoint = false,
-	.show_ccr_sensors = false,
-	.show_scr_ocpo2 = false,
-	.font_size = -1,
-	.mobile_scale = 1.0,
-	.display_invalid_dives = false,
-	.show_sac = false,
-	.display_unused_tanks = false,
-	.show_average_depth = true,
-	.show_icd = false,
-	.ascrate75 = 9000 / 60,
-	.ascrate50 = 9000 / 60,
-	.ascratestops = 9000 / 60,
-	.ascratelast6m = 9000 / 60,
-	.descrate = 18000 / 60,
-	.sacfactor = 400,
-	.problemsolvingtime = 4,
-	.bottompo2 = 1400,
-	.decopo2 = 1600,
-	.bestmixend.mm = 30000,
-	.doo2breaks = false,
-	.dobailout = false,
-	.drop_stone_mode = false,
-	.switch_at_req_stop = false,
-	.min_switch_duration = 60,
-	.surface_segment = 0,
-	.last_stop = false,
-	.verbatim_plan = false,
-	.display_runtime = true,
-	.display_duration = true,
-	.display_transitions = true,
-	.display_variations = false,
-	.o2narcotic = true,
-	.safetystop = true,
-	.bottomsac = 20000,
-	.decosac = 17000,
-	.reserve_gas=40000,
-	.o2consumption = 720,
-	.pscr_ratio = 100,
-	.show_pictures_in_profile = true,
-	.tankbar = false,
-	.defaultsetpoint = 1100,
-	.geocoding = {
-		.category = { 0 }
-	},
-	.locale = {
-		.use_system_language = true,
-	},
-	.planner_deco_mode = BUEHLMANN,
-	.vpmb_conservatism = 3,
-	.distance_threshold = 100,
-	.time_threshold = 300,
-#if defined(SUBSURFACE_MOBILE)
-	.cloud_timeout = 10,
-#else
-	.cloud_timeout = 5,
-#endif
-	.auto_recalculate_thumbnails = true,
-	.extract_video_thumbnails = true,
-	.extract_video_thumbnails_position = 20,		// The first fifth seems like a reasonable place
-};
+#include <stdbool.h>
+#include <string.h>
 
-int ignore_bt;
+extern void show_computer_list();
+
+int quit, force_root, ignore_bt;
 #ifdef SUBSURFACE_MOBILE_DESKTOP
 char *testqml = NULL;
 #endif
-
-const struct units *get_units()
-{
-	return &prefs.units;
-}
-
-/* random helper functions, used here or elsewhere */
-const char *monthname(int mon)
-{
-	static const char month_array[12][4] = {
-		QT_TRANSLATE_NOOP("gettextFromC", "Jan"), QT_TRANSLATE_NOOP("gettextFromC", "Feb"), QT_TRANSLATE_NOOP("gettextFromC", "Mar"), QT_TRANSLATE_NOOP("gettextFromC", "Apr"), QT_TRANSLATE_NOOP("gettextFromC", "May"), QT_TRANSLATE_NOOP("gettextFromC", "Jun"),
-		QT_TRANSLATE_NOOP("gettextFromC", "Jul"), QT_TRANSLATE_NOOP("gettextFromC", "Aug"), QT_TRANSLATE_NOOP("gettextFromC", "Sep"), QT_TRANSLATE_NOOP("gettextFromC", "Oct"), QT_TRANSLATE_NOOP("gettextFromC", "Nov"), QT_TRANSLATE_NOOP("gettextFromC", "Dec"),
-	};
-	return translate("gettextFromC", month_array[mon]);
-}
 
 /*
  * track whether we switched to importing dives
@@ -133,7 +29,11 @@ void print_version()
 	static bool version_printed = false;
 	if (version_printed)
 		return;
+#if defined(SUBSURFACE_DOWNLOADER)
+	printf("Subsurface-downloader v%s,\n", subsurface_git_version());
+#else
 	printf("Subsurface v%s,\n", subsurface_git_version());
+#endif
 	printf("built with libdivecomputer v%s\n", dc_version(NULL));
 	print_qt_versions();
 	int git_maj, git_min, git_rev;
@@ -149,6 +49,7 @@ void print_files()
 	const char *filename, *local_git;
 
 	printf("\nFile locations:\n\n");
+	printf("Cloud email:%s\n", prefs.cloud_storage_email);
 	if (!empty_string(prefs.cloud_storage_email) && !empty_string(prefs.cloud_storage_password)) {
 		filename = cloud_url();
 
@@ -186,6 +87,10 @@ static void print_help()
 	printf("\n --user=<test>         Choose configuration space for user <test>");
 #ifdef SUBSURFACE_MOBILE_DESKTOP
 	printf("\n --testqml=<dir>       Use QML files from <dir> instead of QML resources");
+#elif SUBSURFACE_DOWNLOADER
+	printf("\n --dc-vendor=vendor    Set the dive computer to download from");
+	printf("\n --dc-product=product  Set the dive computer to download from");
+	printf("\n --device=device       Set the device to download from");
 #endif
 	printf("\n --cloud-timeout=<nr>  Set timeout for cloud connection (0 < timeout < 60)\n\n");
 }
@@ -245,7 +150,24 @@ void parse_argument(const char *arg)
 				++force_root;
 				return;
 			}
-#ifdef SUBSURFACE_MOBILE_DESKTOP
+#if SUBSURFACE_DOWNLOADER
+			if (strncmp(arg, "--dc-vendor=", sizeof("--dc-vendor=") - 1) == 0) {
+				prefs.dive_computer.vendor = strdup(arg + sizeof("--dc-vendor=") - 1);
+				return;
+			}
+			if (strncmp(arg, "--dc-product=", sizeof("--dc-product=") - 1) == 0) {
+				prefs.dive_computer.product = strdup(arg + sizeof("--dc-product=") - 1);
+				return;
+			}
+			if (strncmp(arg, "--device=", sizeof("--device=") - 1) == 0) {
+				prefs.dive_computer.device = strdup(arg + sizeof("--device=") - 1);
+				return;
+			}
+			if (strncmp(arg, "--list-dc", sizeof("--list-dc") - 1) == 0) {
+				show_computer_list();
+				exit(0);
+			}
+#elif SUBSURFACE_MOBILE_DESKTOP
 			if (strncmp(arg, "--testqml=", sizeof("--testqml=") - 1) == 0) {
 				testqml = malloc(strlen(arg) - sizeof("--testqml=") + 1);
 				strcpy(testqml, arg + sizeof("--testqml=") - 1);
@@ -303,36 +225,4 @@ void setup_system_prefs(void)
 		return;
 
 	default_prefs.units = IMPERIAL_units;
-}
-
-/* copy a preferences block, including making copies of all included strings */
-void copy_prefs(struct preferences *src, struct preferences *dest)
-{
-	*dest = *src;
-	dest->divelist_font = copy_string(src->divelist_font);
-	dest->default_filename = copy_string(src->default_filename);
-	dest->default_cylinder = copy_string(src->default_cylinder);
-	dest->cloud_base_url = copy_string(src->cloud_base_url);
-	dest->cloud_git_url = copy_string(src->cloud_git_url);
-	dest->proxy_host = copy_string(src->proxy_host);
-	dest->proxy_user = copy_string(src->proxy_user);
-	dest->proxy_pass = copy_string(src->proxy_pass);
-	dest->time_format = copy_string(src->time_format);
-	dest->date_format = copy_string(src->date_format);
-	dest->date_format_short = copy_string(src->date_format_short);
-	dest->cloud_storage_password = copy_string(src->cloud_storage_password);
-	dest->cloud_storage_email = copy_string(src->cloud_storage_email);
-	dest->cloud_storage_email_encoded = copy_string(src->cloud_storage_email_encoded);
-	dest->ffmpeg_executable = copy_string(src->ffmpeg_executable);
-}
-
-/*
- * Free strduped prefs before exit.
- *
- * These are not real leaks but they plug the holes found by eg.
- * valgrind so you can find the real leaks.
- */
-void free_prefs(void)
-{
-	// nop
 }

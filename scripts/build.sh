@@ -15,11 +15,12 @@
 # ./subsurface/libdivecomputer/build (libdivecomputer build)
 # ./subsurface/build                  (desktop build)
 # ./subsurface/build-mobile           (mobile build)
+# ./subsurface/build-downloader       (headless downloader build)
 #
 # there is basic support for building from a shared directory, e.g., with
 # one subsurface source tree on a host computer, accessed from multiple
 # VMs as well as the host to build without stepping on each other - the
-# one exceptioin is running autotools for libdiveconputer which has to
+# one exception is running autotools for libdiveconputer which has to
 # happen in the shared libdivecomputer folder
 # one way to achieve this is to have ./subsurface be a symlink; in that
 # case the build directories are libdivecomputer/build, build, build-mobile
@@ -71,7 +72,7 @@ while [[ $# -gt 0 ]] ; do
 			SRC_DIR="$1"
 			;;			
 		-build-deps)
-			# in order to build the dependencies on Mac for release builds (to deal with the macosx-version-min for those
+			# in order to build the dependencies on Mac for release builds (to deal with the macosx-version-min for those)
 			# call this script with -build-deps
 			BUILD_DEPS="1"
 			;;
@@ -100,10 +101,20 @@ while [[ $# -gt 0 ]] ; do
 			# we are building Subsurface
 			BUILD_DESKTOP="1"
 			;;
+		-downloader)
+			# we are building Subsurface-downloader
+			BUILD_DOWNLOADER="1"
+			;;
 		-both)
 			# we are building Subsurface and Subsurface-mobile
 			BUILD_MOBILE="1"
 			BUILD_DESKTOP="1"
+			;;
+		-all)
+			# we are building Subsurface, Subsurface-mobile, and Subsurface-downloader
+			BUILD_MOBILE="1"
+			BUILD_DESKTOP="1"
+			BUILD_DOWNLOADER="1"
 			;;
 		-create-appdir)
 			# we are building an AppImage as by product
@@ -115,12 +126,17 @@ while [[ $# -gt 0 ]] ; do
 			;;
 		*)
 			echo "Unknown command line argument $arg"
-			echo "Usage: build.sh [-no-bt] [-quick] [-build-deps] [-src-dir <SUBSURFACE directory>] [-build-prefix <PREFIX>] [-build-with-webkit] [-mobile] [-desktop] [-both] [-create-appdir] [-release]"
+			echo "Usage: build.sh [-no-bt] [-quick] [-build-deps] [-src-dir <SUBSURFACE directory>] [-build-prefix <PREFIX>] [-build-with-webkit] [-mobile] [-desktop] [-downloader] [-both] [-all] [-create-appdir] [-release]"
 			exit 1
 			;;
 	esac
 	shift
 done
+
+# recreate the old default behavior - no flag set implies build desktop
+if [ "$BUILD_MOBILE$BUILD_DOWNLOADER" = "" ] ; then
+	BUILD_DESKTOP="1"
+fi
 
 if [ "$BUILD_DEPS" = "1" ] && [ "$QUICK" = "1" ] ; then
 	echo "Conflicting options; cannot request combine -build-deps and -quick"
@@ -152,31 +168,24 @@ if [ "$PLATFORM" = Darwin ] ; then
 fi
 
 # normally this script builds the desktop version in subsurface/build
-# if the first argument is "-mobile" then build Subsurface-mobile in "$BUILD_PREFIX"build-mobile
-# if the first argument is "-both" then build both in subsurface/build and "$BUILD_PREFIX"build-mobile
-BUILDGRANTLEE=0
+# the user can explicitly pick the builds requested
+# for historic reasons, -both builds mobile and desktop, -all builds the downloader as well
 
 if [ "$BUILD_MOBILE" = "1" ] ; then
 	echo "building Subsurface-mobile in ${SRC_DIR}/build-mobile"
-	BUILDS=( "MobileExecutable" )
-	BUILDDIRS=( "${BUILD_PREFIX}build-mobile" )
-else
-	# if no options are given, build Subsurface
-	BUILD_DESKTOP="1"
+	BUILDS+=( "MobileExecutable" )
+	BUILDDIRS+=( "${BUILD_PREFIX}build-mobile" )
 fi
-
-if [ "$BUILD_DESKTOP" = "1" ] ; then
+if [ "$BUILD_DOWNLOADER" = "1" ] ; then
+	echo "building Subsurface-downloader in ${SRC_DIR}/build-downloader"
+	BUILDS+=( "DownloaderExecutable" )
+	BUILDDIRS+=( "${BUILD_PREFIX}build-downloader" )
+fi
+if [ "$BUILD_DESKTOP" = "1" ] || [ "$BUILDS" = "" ] ; then
+	# if no option is given, we build the desktopb version
 	echo "building Subsurface in ${SRC_DIR}/build"
 	BUILDS+=( "DesktopExecutable" )
 	BUILDDIRS+=( "${BUILD_PREFIX}build" )
-	if [ "$BUILD_WITH_WEBKIT" = "1" ] ; then
-		PRINTING="-DNO_PRINTING=OFF"
-		if [ "$QUICK" != "1" ] ; then
-			BUILDGRANTLEE=1
-		fi
-	else
-		PRINTING="-DNO_PRINTING=ON"
-	fi
 fi
 
 if [[ ! -d "${SRC_DIR}" ]] ; then
@@ -205,6 +214,21 @@ else
 	[ -z $QMAKE ] && hash qmake-qt5 > /dev/null 2> /dev/null && QMAKE=qmake-qt5
 	[ -z $QMAKE ] && echo "cannot find qmake or qmake-qt5" && exit 1
 fi
+
+# it's not entirely clear why we only set this on macOS, but this appears to be what works
+if [ "$PLATFORM" = Darwin ] ; then
+	if [ -z "$CMAKE_PREFIX_PATH" ] ; then
+		# we already found qmake and can get the right path information from that
+		libdir=$($QMAKE -query QT_INSTALL_LIBS)
+		if [ $? -eq 0 ]; then
+			export CMAKE_PREFIX_PATH=$libdir/cmake
+		else
+			echo "something is broken with the Qt install"
+			exit 1
+		fi
+	fi
+fi
+
 
 # on Debian and Ubuntu based systems, the private QtLocation and
 # QtPositioning headers aren't bundled. Download them if necessary.
@@ -269,9 +293,12 @@ else
 		# maybe there's a system version that's new enough?
 		# Ugh that's uggly - read the ultimate filename, split at the last 'o' which gets us ".0.26.3" or ".1.0.0"
 		# since that starts with a dot, the field numbers in the cut need to be one higher
-		LIBGIT=$(realpath $(ldconfig -p | grep libgit2\\.so\\. | cut -d\  -f4) | awk -Fo '{ print $NF }')
-		LIBGITMAJ=$(echo $LIBGIT | cut -d. -f2)
-		LIBGIT=$(echo $LIBGIT | cut -d. -f3)
+		LDCONFIG=$(PATH=/sbin:/usr/sbin:$PATH which ldconfig)
+		if [ ! -z "$LDCONFIG" ] ; then
+			LIBGIT=$(realpath $("$LDCONFIG" -p | grep libgit2\\.so\\. | cut -d\  -f4) | awk -Fo '{ print $NF }')
+			LIBGITMAJ=$(echo $LIBGIT | cut -d. -f2)
+			LIBGIT=$(echo $LIBGIT | cut -d. -f3)
+		fi
 	fi
 fi
 
@@ -280,6 +307,20 @@ if [[ $PLATFORM = Darwin && "$BUILD_DEPS" == "1" ]] ; then
 	# because that always requires the latest OS (how stupid is that - and they consider it a
 	# feature). So we painfully need to build the dependencies ourselves.
 	cd "$SRC"
+
+	./${SRC_DIR}/scripts/get-dep-lib.sh single . libz
+	pushd libz
+	# no, don't install pkgconfig files in .../libs/share/pkgconf - that's just weird
+	sed -i .bak 's/share\/pkgconfig/pkgconfig/' CMakeLists.txt
+	mkdir -p build
+	cd build
+	cmake "$OLDER_MAC_CMAKE" -DCMAKE_BUILD_TYPE="$DEBUGRELEASE" \
+		-DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
+		..
+	make -j4
+	make install
+	popd
+
 	./${SRC_DIR}/scripts/get-dep-lib.sh single . libcurl
 	pushd libcurl
 	bash ./buildconf
@@ -380,6 +421,27 @@ if [[ $PLATFORM = Darwin && "$BUILD_DEPS" == "1" ]] ; then
 	make -j4
 	make install
 	popd
+
+	./${SRC_DIR}/scripts/get-dep-lib.sh single . libmtp
+	pushd libmtp
+	echo 'N' | NOCONFIGURE="1" bash ./autogen.sh
+	mkdir -p build
+	cd build
+	CFLAGS="$OLDER_MAC" ../configure --prefix="$INSTALL_ROOT"
+	make -j4
+	make install
+	popd
+
+	./${SRC_DIR}/scripts/get-dep-lib.sh single . libftdi1
+	pushd libftdi1
+	mkdir -p build
+	cd build
+	cmake "$OLDER_MAC_CMAKE" -DCMAKE_BUILD_TYPE="$DEBUGRELEASE" \
+		-DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
+		..
+	make -j4
+	make install
+	popd
 fi
 
 
@@ -425,59 +487,12 @@ if [ "$PLATFORM" = Darwin ] ; then
 fi
 make -j4
 make install
-
-if [ "$PLATFORM" = Darwin ] ; then
-	if [ -z "$CMAKE_PREFIX_PATH" ] ; then
-		libdir=$($QMAKE -query QT_INSTALL_LIBS)
-		if [ $? -eq 0 ]; then
-			export CMAKE_PREFIX_PATH=$libdir/cmake
-		elif [ -d "$HOME/Qt/5.9.1" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.9.1/clang_64/lib/cmake
-		elif [ -d "$HOME/Qt/5.9" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.9/clang_64/lib/cmake
-		elif [ -d "$HOME/Qt/5.8" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.8/clang_64/lib/cmake
-		elif [ -d "$HOME/Qt/5.7" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.7/clang_64/lib/cmake
-		elif [ -d "$HOME/Qt/5.6" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.6/clang_64/lib/cmake
-		elif [ -d "$HOME/Qt/5.5" ] ; then
-			export CMAKE_PREFIX_PATH=~/Qt/5.5/clang_64/lib/cmake
-		elif [ -d /usr/local/opt/qt5/lib ] ; then
-			# Homebrew location for qt5 package
-			export CMAKE_PREFIX_PATH=/usr/local/opt/qt5/lib/cmake
-		else
-			echo "cannot find Qt 5.5 or newer in ~/Qt"
-			exit 1
-		fi
-	fi
-fi
+# make sure we know where the libdivecomputer.a was installed - sometimes it ends up in lib64, sometimes in lib
+STATIC_LIBDC="$INSTALL_ROOT/$(grep ^libdir Makefile | cut -d/ -f2)/libdivecomputer.a"
 
 cd "$SRC"
 
-if [ "$BUILD_WITH_WEBKIT" = "1" ]; then
-	EXTRA_OPTS="-DNO_USERMANUAL=OFF"
-else
-	EXTRA_OPTS="-DNO_USERMANUAL=ON"
-fi
-
-if [ "$BUILDGRANTLEE" = "1" ] ; then
-	# build grantlee
-	cd "$SRC"
-	./${SRC_DIR}/scripts/get-dep-lib.sh single . grantlee
-	pushd grantlee
-	mkdir -p build
-	cd build
-	cmake "$OLDER_MAC_CMAKE" -DCMAKE_BUILD_TYPE="$DEBUGRELEASE" \
-		-DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
-		-DBUILD_TESTS=NO \
-		"$SRC"/grantlee
-	make -j4
-	make install
-	popd
-fi
-
-if [ "$QUICK" != "1" ] ; then
+if [ "$QUICK" != "1" ] && [ "$BUILD_DESKTOP$BUILD_MOBILE" != "" ] ; then
 	# build the googlemaps map plugin
 
 	cd "$SRC"
@@ -508,11 +523,18 @@ for (( i=0 ; i < ${#BUILDS[@]} ; i++ )) ; do
 	BUILDDIR=${BUILDDIRS[$i]}
 	echo "build $SUBSURFACE_EXECUTABLE in $BUILDDIR"
 
+	if [ "$SUBSURFACE_EXECUTABLE" = "DesktopExecutable" ] && [ "$BUILD_WITH_WEBKIT" = "1" ]; then
+		EXTRA_OPTS="-DNO_USERMANUAL=OFF -DNO_PRINTING=OFF"
+	else
+		EXTRA_OPTS="-DNO_USERMANUAL=ON -DNO_PRINTING=ON"
+	fi
+
 	cd "$SRC"/${SRC_DIR}
 
 	# pull the plasma-mobile components from upstream if building Subsurface-mobile
 	if [ "$SUBSURFACE_EXECUTABLE" = "MobileExecutable" ] ; then
 		bash ./scripts/mobilecomponents.sh
+		EXTRA_OPTS="$EXTRA_OPTS -DECM_DIR=$SRC/$SRC_DIR/mobile-widgets/3rdparty/ECM"
 	fi
 
 	mkdir -p "$BUILDDIR"
@@ -522,13 +544,13 @@ for (( i=0 ; i < ${#BUILDS[@]} ; i++ )) ; do
 		-DSUBSURFACE_TARGET_EXECUTABLE="$SUBSURFACE_EXECUTABLE" \
 		"$LIBGIT_ARGS" \
 		-DLIBDIVECOMPUTER_INCLUDE_DIR="$INSTALL_ROOT"/include \
-		-DLIBDIVECOMPUTER_LIBRARIES="$INSTALL_ROOT"/lib/libdivecomputer.a \
+		-DLIBDIVECOMPUTER_LIBRARIES="$STATIC_LIBDC" \
 		-DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
 		-DBTSUPPORT="$BTSUPPORT" \
 		-DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
 		$LIBGIT2_FROM_PKGCONFIG \
 		-DFORCE_LIBSSH=OFF \
-		$PRINTING $EXTRA_OPTS \
+		$EXTRA_OPTS \
 		"$SRC"/${SRC_DIR}
 
 	if [ "$PLATFORM" = Darwin ] ; then

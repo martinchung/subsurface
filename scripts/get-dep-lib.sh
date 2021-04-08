@@ -2,22 +2,22 @@
 #
 
 # set version of 3rd party libraries
+CURRENT_LIBZ="v1.2.11"
 CURRENT_LIBZIP="rel-1-5-1"
-CURRENT_LIBGIT2="v0.26.0"
-CURRENT_HIDAPI="hidapi-0.7.0"
+CURRENT_LIBGIT2="v1.0.1"
 CURRENT_LIBCURL="curl-7_54_1"
 CURRENT_LIBUSB="v1.0.21"
-CURRENT_OPENSSL="OpenSSL_1_1_0h"
+CURRENT_OPENSSL="OpenSSL_1_1_1h"
 CURRENT_LIBSSH2="libssh2-1.8.0"
 CURRENT_XSLT="v1.1.34"
 CURRENT_SQLITE="3190200"
 CURRENT_LIBXML2="v2.9.4"
 CURRENT_LIBFTDI="1.3"
-CURRENT_KIRIGAMI="v5.62.0"
+CURRENT_KIRIGAMI="v5.76.0"
 CURRENT_BREEZE_ICONS="4daac191fb33c8c03bba8356db9767816cb8ee02"
-CURRENT_GRANTLEE="v5.1.0"
 CURRENT_MDBTOOLS="master"
 CURRENT_QT_ANDROID_CMAKE="master"
+CURRENT_LIBMTP="master"
 
 # Checkout library from git
 # Ensure specified version is checked out,
@@ -103,7 +103,7 @@ fi
 
 # FIX FOR ANDROID,
 if [ "$PLATFORM" == "singleAndroid" ] ; then
-	CURRENT_OPENSSL="OpenSSL_1_1_1d"
+	CURRENT_OPENSSL="OpenSSL_1_1_1h"
 # If changing the openSSL version here, make sure to change it in packaging/android/variables.sh also.
 fi
 # no curl and old libs (never version breaks)
@@ -156,6 +156,9 @@ for package in "${PACKAGES[@]}" ; do
 		libusb)
 			git_checkout_library libusb $CURRENT_LIBUSB https://github.com/libusb/libusb.git
 			;;
+		libmtp)
+			git_checkout_library libmtp $CURRENT_LIBMTP https://github.com/libmtp/libmtp.git
+			;;
 		libxml2)
 			git_checkout_library libxml2 $CURRENT_LIBXML2 https://github.com/GNOME/libxml2.git
 			;;
@@ -169,13 +172,19 @@ for package in "${PACKAGES[@]}" ; do
 			git_checkout_library googlemaps master https://github.com/Subsurface/googlemaps.git
 			;;
 		hidapi)
-			git_checkout_library hidapi master https://github.com/signal11/hidapi.git
+			git_checkout_library hidapi master https://github.com/libusb/hidapi.git
 			;;
 		kirigami)
 			git_checkout_library kirigami $CURRENT_KIRIGAMI https://github.com/KDE/kirigami.git
 			;;
+		extra-cmake-modules) # we want this intentionally at the same version as kirigami
+			git_checkout_library extra-cmake-modules $CURRENT_KIRIGAMI https://github.com/KDE/extra-cmake-modules.git
+			;;
 		openssl)
 			git_checkout_library openssl $CURRENT_OPENSSL https://github.com/openssl/openssl.git
+			;;
+		libz)
+			git_checkout_library libz $CURRENT_LIBZ https://github.com/madler/zlib.git
 			;;
 		libzip)
 			git_checkout_library libzip $CURRENT_LIBZIP https://github.com/nih-at/libzip.git
@@ -185,11 +194,6 @@ for package in "${PACKAGES[@]}" ; do
 			;;
 		sqlite)
 			curl_download_library sqlite https://www.sqlite.org/2017/ sqlite-autoconf-${CURRENT_SQLITE}.tar.gz
-			;;
-		grantlee)
-			git_checkout_library grantlee $CURRENT_GRANTLEE https://github.com/steveire/grantlee.git
-			# this should be removed once there is a newer Grantlee release than v5.1.0
-			( cd grantlee ; git -c user.email=in@val.id -c user.name='Subsurface build automation' cherry-pick 1b4f22431ae35dfd11f07a5ae88a1b4db3de2a85 ; cd .. )
 			;;
 		mdbtools)
 			git_checkout_library mdbtools $CURRENT_MDBTOOLS https://github.com/brianb/mdbtools.git

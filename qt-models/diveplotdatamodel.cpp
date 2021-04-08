@@ -180,7 +180,7 @@ void DivePlotDataModel::clear()
 	}
 }
 
-void DivePlotDataModel::setDive(dive *d, const plot_info &info)
+void DivePlotDataModel::setDive(const plot_info &info)
 {
 	beginResetModel();
 	dcNr = dc_number;
@@ -199,32 +199,27 @@ unsigned int DivePlotDataModel::dcShown() const
 	return dcNr;
 }
 
-#define MAX_PPGAS_FUNC(GAS, GASFUNC)                                  \
-	double DivePlotDataModel::GASFUNC()                           \
-	{                                                             \
-		double ret = -1;                                      \
-		for (int i = 0, count = rowCount(); i < count; i++) { \
-			if (pInfo.entry[i].pressures.GAS > ret)       \
-				ret = pInfo.entry[i].pressures.GAS;   \
-		}                                                     \
-		return ret;                                           \
+static double max_gas(const plot_info &pi, double gas_pressures::*gas)
+{
+	double ret = -1;
+	for (int i = 0; i < pi.nr; ++i) {
+		if (pi.entry[i].pressures.*gas > ret)
+			ret = pi.entry[i].pressures.*gas;
 	}
-
-MAX_PPGAS_FUNC(he, pheMax);
-MAX_PPGAS_FUNC(n2, pn2Max);
-MAX_PPGAS_FUNC(o2, po2Max);
-
-void DivePlotDataModel::emitDataChanged()
-{
-	emit dataChanged(QModelIndex(), QModelIndex());
+	return ret;
 }
 
-#ifndef SUBSURFACE_MOBILE
-void DivePlotDataModel::calculateDecompression()
+double DivePlotDataModel::pheMax() const
 {
-	struct divecomputer *dc = select_dc(&displayed_dive);
-	init_decompression(&plot_deco_state, &displayed_dive);
-	calculate_deco_information(&plot_deco_state, &(DivePlannerPointsModel::instance()->final_deco_state), &displayed_dive, dc, &pInfo, false);
-	dataChanged(index(0, CEILING), index(pInfo.nr - 1, TISSUE_16));
+	return max_gas(pInfo, &gas_pressures::he);
 }
-#endif
+
+double DivePlotDataModel::pn2Max() const
+{
+	return max_gas(pInfo, &gas_pressures::n2);
+}
+
+double DivePlotDataModel::po2Max() const
+{
+	return max_gas(pInfo, &gas_pressures::o2);
+}

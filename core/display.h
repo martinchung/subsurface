@@ -21,6 +21,7 @@ struct plot_info {
 	enum {AIR, NITROX, TRIMIX, FREEDIVING} dive_type;
 	double endtempcoord;
 	double maxpp;
+	bool waypoint_above_ceiling;
 	struct plot_data *entry;
 	struct plot_pressure_data *pressures; /* cylinders.nr blocks of nr entries. */
 };
@@ -30,7 +31,6 @@ extern struct divecomputer *select_dc(struct dive *);
 extern unsigned int dc_number;
 
 extern int is_default_dive_computer_device(const char *);
-extern int is_default_dive_computer(const char *, const char *);
 
 typedef void (*device_callback_t)(const char *name, void *userdata);
 

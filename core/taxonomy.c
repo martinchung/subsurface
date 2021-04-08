@@ -26,9 +26,10 @@ char *taxonomy_api_names[TC_NR_CATEGORIES] = {
 	"adminName3"
 };
 
-struct taxonomy *alloc_taxonomy()
+static void alloc_taxonomy_table(struct taxonomy_data *t)
 {
-	return calloc(TC_NR_CATEGORIES, sizeof(struct taxonomy));
+	if (!t->category)
+		t->category = calloc(TC_NR_CATEGORIES, sizeof(struct taxonomy));
 }
 
 void free_taxonomy(struct taxonomy_data *t)
@@ -42,13 +43,12 @@ void free_taxonomy(struct taxonomy_data *t)
 	}
 }
 
-void copy_taxonomy(struct taxonomy_data *orig, struct taxonomy_data *copy)
+void copy_taxonomy(const struct taxonomy_data *orig, struct taxonomy_data *copy)
 {
 	if (orig->category == NULL) {
 		free_taxonomy(copy);
 	} else {
-		if (copy->category == NULL)
-			copy->category = alloc_taxonomy();
+		alloc_taxonomy_table(copy);
 		for (int i = 0; i < TC_NR_CATEGORIES; i++) {
 			if (i < copy->nr) {
 				free((void *)copy->category[i].value);
@@ -63,47 +63,49 @@ void copy_taxonomy(struct taxonomy_data *orig, struct taxonomy_data *copy)
 	}
 }
 
-int taxonomy_index_for_category(struct taxonomy_data *t, enum taxonomy_category cat)
+static int taxonomy_index_for_category(const struct taxonomy_data *t, enum taxonomy_category cat)
 {
-	for (int i = 0; i < t->nr; i++)
+	for (int i = 0; i < t->nr; i++) {
 		if (t->category[i].category == cat)
 			return i;
+	}
 	return -1;
 }
 
-const char *taxonomy_get_country(struct taxonomy_data *t)
+const char *taxonomy_get_value(const struct taxonomy_data *t, enum taxonomy_category cat)
 {
-	for (int i = 0; i < t->nr; i++) {
-		if (t->category[i].category == TC_COUNTRY)
-			return t->category[i].value;
+	int idx = taxonomy_index_for_category(t, cat);
+	return idx >= 0 ? t->category[idx].value : NULL;
+}
+
+const char *taxonomy_get_country(const struct taxonomy_data *t)
+{
+	return taxonomy_get_value(t, TC_COUNTRY);
+}
+
+void taxonomy_set_category(struct taxonomy_data *t, enum taxonomy_category category, const char *value, enum taxonomy_origin origin)
+{
+	int idx = taxonomy_index_for_category(t, category);
+
+	if (idx < 0) {
+		alloc_taxonomy_table(t); // make sure we have taxonomy data allocated
+		if (t->nr == TC_NR_CATEGORIES - 1) {
+			// can't add another one
+			fprintf(stderr, "Error adding taxonomy category\n");
+			return;
+		}
+		idx = t->nr++;
+	} else {
+		free((void *)t->category[idx].value);
+		t->category[idx].value = NULL;
 	}
-	return NULL;
+	t->category[idx].value = strdup(value);
+	t->category[idx].origin = origin;
+	t->category[idx].category = category;
 }
 
 void taxonomy_set_country(struct taxonomy_data *t, const char *country, enum taxonomy_origin origin)
 {
-	int idx = -1;
-
-	// make sure we have taxonomy data allocated
-	if (!t->category)
-		t->category = alloc_taxonomy();
-
-	for (int i = 0; i < t->nr; i++) {
-		if (t->category[i].category == TC_COUNTRY) {
-			idx = i;
-			break;
-		}
-	}
-	if (idx == -1) {
-		if (t->nr == TC_NR_CATEGORIES - 1) {
-			// can't add another one
-			fprintf(stderr, "Error adding country taxonomy\n");
-			return;
-		}
-		idx = t->nr++;
-	}
-	t->category[idx].value = country;
-	t->category[idx].origin = origin;
-	t->category[idx].category = TC_COUNTRY;
 	fprintf(stderr, "%s: set the taxonomy country to %s\n", __func__, country);
+	taxonomy_set_category(t, TC_COUNTRY, country, origin);
 }

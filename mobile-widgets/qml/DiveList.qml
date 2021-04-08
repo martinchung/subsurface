@@ -12,8 +12,13 @@ Kirigami.ScrollablePage {
 	objectName: "DiveList"
 	title: qsTr("Dive list")
 	verticalScrollBarPolicy: Qt.ScrollBarAlwaysOff
-	property int horizontalPadding: Kirigami.Units.gridUnit / 2 - Kirigami.Units.smallSpacing  + 1
+	property int dlHorizontalPadding: Kirigami.Units.gridUnit / 2 - Kirigami.Units.smallSpacing  + 1
 	property QtObject diveListModel: null
+	// we want to use our own colors for Kirigami, so let's define our colorset
+	Kirigami.Theme.inherit: false
+	Kirigami.Theme.colorSet: Kirigami.Theme.Button
+	Kirigami.Theme.backgroundColor: subsurfaceTheme.backgroundColor
+	Kirigami.Theme.textColor: subsurfaceTheme.textColor
 
 	supportsRefreshing: true
 	onRefreshingChanged: {
@@ -21,6 +26,7 @@ Kirigami.ScrollablePage {
 			if (Backend.cloud_verification_status === Enums.CS_VERIFIED) {
 				detailsWindow.endEditMode()
 				manager.saveChangesCloud(true)
+				showPassiveNotification(qsTr("Completed manual sync with cloud\n") + manager.syncState)
 				refreshing = false
 			} else {
 				manager.appendTextToLog("sync with cloud storage requested, but credentialStatus is " + Backend.cloud_verification_status)
@@ -42,17 +48,14 @@ Kirigami.ScrollablePage {
 			padding: 0
 			supportsMouseEvents: true
 			anchors {
-				left: parent.left
-				right: parent.right
+				left: parent ? parent.left : undefined
+				right: parent ? parent.right : undefined
 			}
-			height: (isTrip ? 9 : 11) * Kirigami.Units.smallSpacing // delegateInnerItem.height
+			height: isTrip ? 1 + 8 * Kirigami.Units.smallSpacing : 11 * Kirigami.Units.smallSpacing // delegateInnerItem.height
 
 			onSelectedChanged: {
-				console.log("index " + index + " select changed to " + selected)
-				if (selected && index !== view.currentIndex) {
+				if (selected && index !== view.currentIndex)
 					view.currentIndex = index;
-					console.log("updated view.currentIndex")
-				}
 			}
 
 			// When clicked, a trip expands / unexpands, a dive is opened in DiveDetails
@@ -95,10 +98,10 @@ Kirigami.ScrollablePage {
 					visible: isTrip
 					Rectangle {
 						id: dateBox
-						height: 1.8 * Kirigami.Units.gridUnit
-						width: 2.2 * Kirigami.Units.gridUnit
+						height: 1.5 * Kirigami.Units.gridUnit
+						width: 1.8 * Kirigami.Units.gridUnit
 						color: subsurfaceTheme.primaryColor
-						radius: Kirigami.Units.smallSpacing * 2
+						radius: Kirigami.Units.smallSpacing * 1.5
 						antialiasing: true
 						anchors {
 							verticalCenter: parent.verticalCenter
@@ -111,7 +114,7 @@ Kirigami.ScrollablePage {
 							color: subsurfaceTheme.primaryTextColor
 							font.pointSize: subsurfaceTheme.smallPointSize * 0.8
 							lineHeightMode: Text.FixedHeight
-							lineHeight: Kirigami.Units.gridUnit *.8
+							lineHeight: Kirigami.Units.gridUnit *.6
 							horizontalAlignment: Text.AlignHCenter
 							height: contentHeight
 							anchors {
@@ -129,22 +132,11 @@ Kirigami.ScrollablePage {
 						anchors {
 							verticalCenter: parent.verticalCenter
 							left: dateBox.right
-							leftMargin: horizontalPadding * 2
+							leftMargin: dlHorizontalPadding * 2
 							right: parent.right
 						}
 						color: subsurfaceTheme.lightPrimaryTextColor
 					}
-				}
-				Rectangle {
-					id: headingBottomLine
-					height: visible ? Kirigami.Units.smallSpacing : 0
-					visible: headingBackground.visible
-					anchors {
-						left: parent.left
-						right: parent.right
-						top: headingBackground.bottom
-					}
-					color: "#B2B2B2"
 				}
 
 				Rectangle {
@@ -173,7 +165,7 @@ Kirigami.ScrollablePage {
 						}
 						Item {
 							id: diveListEntry
-							height: visible ? 10 * Kirigami.Units.smallSpacing : 0
+							height: visible ? 10 * Kirigami.Units.smallSpacing - 1 : 0
 							anchors {
 								right: parent.right
 								left: leftBarDive.right
@@ -190,7 +182,7 @@ Kirigami.ScrollablePage {
 								color: selected ? subsurfaceTheme.darkerPrimaryTextColor : subsurfaceTheme.textColor
 								anchors {
 									left: parent.left
-									leftMargin: horizontalPadding * 2
+									leftMargin: dlHorizontalPadding * 2
 									topMargin: Kirigami.Units.smallSpacing / 2
 									top: parent.top
 									right: parent.right
@@ -392,28 +384,27 @@ Kirigami.ScrollablePage {
 			anchors.right: parent.right
 			anchors.leftMargin: Kirigami.Units.gridUnit / 2
 			anchors.rightMargin: Kirigami.Units.gridUnit / 2
-			TemplateComboBox {
+			TemplateSlimComboBox {
 				visible: filterBar.height === sitefilter.implicitHeight
 				id: sitefilterMode
-				editable: false
 				model: ListModel {
 					ListElement {text: qsTr("Fulltext")}
 					ListElement {text: qsTr("People")}
 					ListElement {text: qsTr("Tags")}
 				}
 				font.pointSize: subsurfaceTheme.smallPointSize
-				Layout.preferredWidth: parent.width * 0.2
 				Layout.maximumWidth: parent.width * 0.3
 				onActivated:  {
 					manager.setFilter(sitefilter.text, currentIndex)
 				}
 			}
-			Controls.TextField  {
+			TemplateTextField  {
 				id: sitefilter
 				verticalAlignment: TextInput.AlignVCenter
 				Layout.fillWidth: true
 				text: ""
 				placeholderText: sitefilterMode.currentText
+				placeholderTextColor: subsurfaceTheme.secondaryTextColor
 				onAccepted: {
 					manager.setFilter(text, sitefilterMode.currentIndex)
 				}
@@ -425,7 +416,7 @@ Kirigami.ScrollablePage {
 					}
 				}
 			}
-			Controls.Label {
+			TemplateLabel {
 				id: numShown
 				verticalAlignment: Text.AlignVCenter
 				text: diveModel.shown
@@ -467,6 +458,7 @@ Kirigami.ScrollablePage {
 		icon {
 			name: ":/icons/list-add"
 		}
+		color: subsurfaceTheme.textColor
 		text: qsTr("Add dive")
 		onTriggered: {
 			startAddDive()
@@ -477,6 +469,7 @@ Kirigami.ScrollablePage {
 		icon {
 			name: ":icons/ic_filter_list"
 		}
+		color: subsurfaceTheme.textColor
 		text: qsTr("Filter dives")
 		onTriggered: {
 			rootItem.filterToggle = !rootItem.filterToggle
@@ -490,7 +483,7 @@ Kirigami.ScrollablePage {
 
 	onBackRequested: {
 		if (startPage.visible && diveListView.count > 0 &&
-			Backend.cloud_verification_status !== Enums.CS_INCORRECT_USER_PASSWD) {
+		    Backend.cloud_verification_status !== Enums.CS_INCORRECT_USER_PASSWD) {
 			Backend.cloud_verification_status = oldStatus
 			event.accepted = true;
 		}

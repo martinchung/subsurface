@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "mobilelistmodel.h"
-#include "core/divelist.h" // for shown_dives
+#include "core/divefilter.h" // for shown_dives
 
 MobileListModelBase::MobileListModelBase(DiveTripModelBase *sourceIn) : source(sourceIn)
 {
@@ -58,7 +58,7 @@ QHash<int, QByteArray> MobileListModelBase::roleNames() const
 
 int MobileListModel::shown() const
 {
-	return shown_dives;
+	return DiveFilter::instance()->shownDives();
 }
 
 int MobileListModelBase::columnCount(const QModelIndex &parent) const

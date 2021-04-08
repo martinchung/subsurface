@@ -10,6 +10,8 @@
 
 #include <QObject>
 
+struct device;
+
 // Dive and trip fields that can be edited. Use bit fields so that we can pass multiple fields at once.
 // Provides an inlined flag-based constructur because sadly C-style designated initializers are only supported since C++20.
 struct DiveField {
@@ -81,6 +83,9 @@ signals:
 	// The core structures were completely reset. Repopulate all models.
 	void dataReset();
 
+	// The settings changed. Repopulate / rerender unit-dependent data, etc.
+	void settingsChanged();
+
 	// Note that there are no signals for trips being added and created
 	// because these events never happen without a dive being added, removed or moved.
 	// The dives are always sorted according to the dives_less_than() function of the core.
@@ -89,6 +94,7 @@ signals:
 	void divesMovedBetweenTrips(dive_trip *from, dive_trip *to, bool deleteFrom, bool createTo, const QVector<dive *> &dives);
 	void divesChanged(const QVector<dive *> &dives, DiveField field);
 	void divesTimeChanged(timestamp_t delta, const QVector<dive *> &dives);
+	void divesImported(); // A general signal when multiple dives have been imported.
 
 	void cylindersReset(const QVector<dive *> &dives);
 	void cylinderAdded(dive *d, int pos);
@@ -124,6 +130,16 @@ signals:
 	void pictureOffsetChanged(dive *d, QString filename, offset_t offset);
 	void picturesRemoved(dive *d, QVector<QString> filenames);
 	void picturesAdded(dive *d, QVector<PictureObj> pics);
+
+	// Devices related signals
+	void deviceAdded(int index);
+	void deviceDeleted(int index);
+	void deviceEdited(int index);
+
+	// Filter related signals
+	void filterPresetAdded(int index);
+	void filterPresetRemoved(int index);
+	void filterPresetChanged(int index);
 
 	// This signal is emited every time a command is executed.
 	// This is used to hide an old multi-dives-edited warning message.

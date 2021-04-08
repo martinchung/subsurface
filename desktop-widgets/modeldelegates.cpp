@@ -106,13 +106,18 @@ QWidget *ComboBoxDelegate::createEditor(QWidget *parent, const QStyleOptionViewI
 	comboDelegate->setEditable(true);
 	comboDelegate->completer()->setCaseSensitivity(Qt::CaseInsensitive);
 	comboDelegate->completer()->setCompletionMode(QCompleter::PopupCompletion);
+	comboDelegate->completer()->setFilterMode(Qt::MatchContains);
 	comboDelegate->view()->setEditTriggers(QAbstractItemView::AllEditTriggers);
 	comboDelegate->lineEdit()->installEventFilter(const_cast<QObject *>(qobject_cast<const QObject *>(this)));
 	comboDelegate->lineEdit()->setEnabled(editable);
 	comboDelegate->view()->installEventFilter(const_cast<QObject *>(qobject_cast<const QObject *>(this)));
 	QAbstractItemView *comboPopup = comboDelegate->lineEdit()->completer()->popup();
 	comboPopup->setMouseTracking(true);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+	connect(comboDelegate, &QComboBox::textHighlighted, this, &ComboBoxDelegate::testActivationString);
+#else
 	connect(comboDelegate, QOverload<const QString &>::of(&QComboBox::highlighted), this, &ComboBoxDelegate::testActivationString);
+#endif
 	connect(comboDelegate, QOverload<int>::of(&QComboBox::activated), this, &ComboBoxDelegate::fakeActivation);
 	connect(comboPopup, &QAbstractItemView::entered, this, &ComboBoxDelegate::testActivationIndex);
 	connect(comboPopup, &QAbstractItemView::activated, this, &ComboBoxDelegate::fakeActivation);
@@ -212,9 +217,13 @@ void TankInfoDelegate::setModelData(QWidget *, QAbstractItemModel *, const QMode
 {
 	QAbstractItemModel *mymodel = currCombo.model;
 	TankInfoModel *tanks = TankInfoModel::instance();
-	QModelIndexList matches = tanks->match(tanks->index(0, 0), Qt::DisplayRole, currCombo.activeText, 1, Qt::MatchFixedString | Qt::MatchWrap);
+	QString cylinderName = currCombo.activeText.trimmed();
+	if (cylinderName.isEmpty()) {
+		mymodel->setData(IDX(CylindersModel::TYPE), cylinderName, CylindersModel::TEMP_ROLE);
+		return;
+	}
+	QModelIndexList matches = tanks->match(tanks->index(0, 0), Qt::DisplayRole, cylinderName, 1, Qt::MatchFixedString | Qt::MatchWrap);
 	int row;
-	QString cylinderName = currCombo.activeText;
 	if (matches.isEmpty()) {
 		tanks->insertRows(tanks->rowCount(), 1);
 		tanks->setData(tanks->index(tanks->rowCount() - 1, 0), currCombo.activeText);
@@ -404,12 +413,12 @@ void LocationFilterDelegate::paint(QPainter *painter, const QStyleOptionViewItem
 	for (int i = 0; i < 3; i++) {
 		if (prefs.geocoding.category[i] == TC_NONE)
 			continue;
-		int idx = taxonomy_index_for_category(&ds->taxonomy, prefs.geocoding.category[i]);
-		if (idx == -1)
+		const char *value = taxonomy_get_value(&ds->taxonomy, prefs.geocoding.category[i]);
+		if (empty_string(value))
 			continue;
 		if(!bottomText.isEmpty())
 			bottomText += " / ";
-		bottomText += QString(ds->taxonomy.category[idx].value);
+		bottomText += QString(value);
 	}
 
 	if (bottomText.isEmpty())

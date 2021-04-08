@@ -86,11 +86,18 @@ void WeightModel::setTempWS(int row, weightsystem_t ws)
 	// It is really hard to get the editor-close-hints and setModelData calls under
 	// control. Therefore, if the row is set to the already existing entry, don't
 	// enter temporary mode.
-	if (same_string(d->weightsystems.weightsystems[row].description, ws.description)) {
+	const weightsystem_t &oldWS = d->weightsystems.weightsystems[row];
+	if (same_string(oldWS.description, ws.description)) {
 		free_weightsystem(ws);
 	} else {
 		tempRow = row;
 		tempWS = ws;
+
+		// If the user had already set a weight, don't overwrite that
+		if (oldWS.weight.grams && !oldWS.auto_filled)
+			tempWS.weight = oldWS.weight;
+		else
+			tempWS.auto_filled = true;
 	}
 	dataChanged(index(row, TYPE), index(row, WEIGHT));
 }
@@ -128,6 +135,7 @@ bool WeightModel::setData(const QModelIndex &index, const QVariant &value, int r
 	switch (index.column()) {
 	case WEIGHT:
 		ws.weight = string_to_weight(qPrintable(vString));
+		ws.auto_filled = false;
 		int count = Command::editWeight(index.row(), ws, false);
 		emit divesEdited(count);
 		return true;

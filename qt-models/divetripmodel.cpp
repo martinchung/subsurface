@@ -3,6 +3,7 @@
 #include "core/divefilter.h"
 #ifdef SUBSURFACE_MOBILE
 #include "qt-models/mobilelistmodel.h"
+#include "core/string-format.h"
 #endif
 #include "core/gettextfromc.h"
 #include "core/metrics.h"
@@ -119,14 +120,10 @@ QVariant DiveTripModelBase::tripData(const dive_trip *trip, int column, int role
 		switch (column) {
 		case DiveTripModelBase::NR:
 			QString shownText;
-			bool oneDayTrip = trip_is_single_day(trip);
 			int countShown = trip_shown_dives(trip);
 			if (countShown < trip->dives.nr)
 				shownText = tr("(%1 shown)").arg(countShown);
-			if (!empty_string(trip->location))
-				return QString(trip->location) + ", " + get_trip_date_string(trip_date(trip), trip->dives.nr, oneDayTrip) + " "+ shownText;
-			else
-				return get_trip_date_string(trip_date(trip), trip->dives.nr, oneDayTrip) + shownText;
+			return get_trip_string(trip) + " " + shownText;
 		}
 	}
 
@@ -191,6 +188,28 @@ static QString displayWeight(const struct dive *d, bool units)
 		return s + gettextFromC::tr("lbs");
 }
 
+static QPixmap &getGlobeIcon()
+{
+	static std::unique_ptr<QPixmap> icon;
+	if (!icon) {
+		const IconMetrics &im = defaultIconMetrics();
+		icon = std::make_unique<QPixmap>(QIcon(":globe-icon").pixmap(im.sz_small, im.sz_small));
+	}
+	return *icon;
+}
+
+static QPixmap &getPhotoIcon(int idx)
+{
+	static std::unique_ptr<QPixmap[]> icons;
+	if (!icons) {
+		const IconMetrics &im = defaultIconMetrics();
+		icons = std::make_unique<QPixmap[]>(std::size(icon_names));
+		for (size_t i = 0; i < std::size(icon_names); ++i)
+			icons[i] = QIcon(icon_names[i]).pixmap(im.sz_small, im.sz_small);
+	}
+	return icons[idx];
+}
+
 QVariant DiveTripModelBase::diveData(const struct dive *d, int column, int role) const
 {
 #ifdef SUBSURFACE_MOBILE
@@ -200,40 +219,36 @@ QVariant DiveTripModelBase::diveData(const struct dive *d, int column, int role)
 	// We have to return a QString as trip-id, because that will be used as section
 	// variable in the QtQuick list view. That has to be a string because it will try
 	// to do locale-aware sorting. And amazingly this can't be changed.
-	case MobileListModel::DateTimeRole: {
-		QDateTime localTime = timestampToDateTime(d->when);
-		return QStringLiteral("%1 %2").arg(localTime.date().toString(prefs.date_format_short),
-						   localTime.time().toString(prefs.time_format));
-		}
+	case MobileListModel::DateTimeRole: return formatDiveDateTime(d);
 	case MobileListModel::IdRole: return d->id;
 	case MobileListModel::NumberRole: return d->number;
 	case MobileListModel::LocationRole: return get_dive_location(d);
 	case MobileListModel::DepthRole: return get_depth_string(d->dc.maxdepth.mm, true, true);
-	case MobileListModel::DurationRole: return get_dive_duration_string(d->duration.seconds, gettextFromC::tr("h"), gettextFromC::tr("min"));
+	case MobileListModel::DurationRole: return formatDiveDuration(d);
 	case MobileListModel::DepthDurationRole: return QStringLiteral("%1 / %2").arg(get_depth_string(d->dc.maxdepth.mm, true, true),
-								     get_dive_duration_string(d->duration.seconds, gettextFromC::tr("h"), gettextFromC::tr("min")));
+										      formatDiveDuration(d));
 	case MobileListModel::RatingRole: return d->rating;
 	case MobileListModel::VizRole: return d->visibility;
 	case MobileListModel::SuitRole: return d->suit;
 	case MobileListModel::AirTempRole: return get_temperature_string(d->airtemp, true);
 	case MobileListModel::WaterTempRole: return get_temperature_string(d->watertemp, true);
 	case MobileListModel::SacRole: return formatSac(d);
-	case MobileListModel::SumWeightRole: return get_weight_string(weight_t { total_weight(d) }, true);
-	case MobileListModel::DiveMasterRole: return d->divemaster ? d->divemaster : QString();
-	case MobileListModel::BuddyRole: return d->buddy ? d->buddy : QString();
+	case MobileListModel::SumWeightRole: return formatSumWeight(d);
+	case MobileListModel::DiveMasterRole: return d->divemaster;
+	case MobileListModel::BuddyRole: return d->buddy;
 	case MobileListModel::TagsRole: return get_taglist_string(d->tag_list);
 	case MobileListModel::NotesRole: return formatNotes(d);
-	case MobileListModel::GpsRole: return d->dive_site ? printGPSCoords(&d->dive_site->location) : QString();
+	case MobileListModel::GpsRole: return formatDiveGPS(d);
 	case MobileListModel::GpsDecimalRole: return format_gps_decimal(d);
 	case MobileListModel::NoDiveRole: return d->duration.seconds == 0 && d->dc.duration.seconds == 0;
 	case MobileListModel::DiveSiteRole: return QVariant::fromValue(d->dive_site);
 	case MobileListModel::CylinderRole: return formatGetCylinder(d).join(", ");
 	case MobileListModel::GetCylinderRole: return formatGetCylinder(d);
-	case MobileListModel::CylinderListRole: return getFullCylinderList();
+	case MobileListModel::CylinderListRole: return formatFullCylinderList();
 	case MobileListModel::SingleWeightRole: return d->weightsystems.nr <= 1;
-	case MobileListModel::StartPressureRole: return getStartPressure(d);
-	case MobileListModel::EndPressureRole: return getEndPressure(d);
-	case MobileListModel::FirstGasRole: return getFirstGas(d);
+	case MobileListModel::StartPressureRole: return formatStartPressure(d);
+	case MobileListModel::EndPressureRole: return formatEndPressure(d);
+	case MobileListModel::FirstGasRole: return formatFirstGas(d);
 	case MobileListModel::SelectedRole: return d->selected;
 	case MobileListModel::DiveInTripRole: return d->divetrip != NULL;
 	case MobileListModel::IsInvalidRole: return d->invalid;
@@ -296,17 +311,15 @@ QVariant DiveTripModelBase::diveData(const struct dive *d, int column, int role)
 		case COUNTRY:
 			return QVariant();
 		case LOCATION:
-			if (dive_has_gps_location(d)) {
-				IconMetrics im = defaultIconMetrics();
-				return QIcon(":globe-icon").pixmap(im.sz_small, im.sz_small);
-			}
+			if (dive_has_gps_location(d))
+				return getGlobeIcon();
 			break;
 		case PHOTOS:
-			if (d->pictures.nr > 0) {
-				IconMetrics im = defaultIconMetrics();
-				return QIcon(icon_names[countPhotos(d)]).pixmap(im.sz_small, im.sz_small);
-			}	 // If there are photos, show one of the three photo icons: fish= photos during dive;
-			break;	 // sun=photos before/after dive; sun+fish=photos during dive as well as before/after
+			// If there are photos, show one of the three photo icons: fish= photos during dive;
+			// sun=photos before/after dive; sun+fish=photos during dive as well as before/after
+			if (d->pictures.nr > 0)
+				return getPhotoIcon(countPhotos(d));
+			break;
 		}
 		break;
 	case Qt::ToolTipRole:
@@ -486,7 +499,6 @@ void DiveTripModelBase::reset()
 	uiNotification(tr("finish populating data store"));
 	endResetModel();
 	uiNotification(tr("setting up internal data structures"));
-	initSelection();
 	emit diveListNotifier.numShownChanged();
 	uiNotification(tr("done setting up internal data structures"));
 }
@@ -538,9 +550,6 @@ static ShownChange updateShownAll()
 
 void DiveTripModelBase::currentChanged()
 {
-	if (oldCurrent == current_dive)
-		return;
-
 	// On Desktop we use a signal to forward current-dive changed, on mobile we use ROLE_CURRENT.
 	// TODO: Unify - use the role for both.
 #if defined(SUBSURFACE_MOBILE)
@@ -549,11 +558,13 @@ void DiveTripModelBase::currentChanged()
 		QModelIndex oldIdx = diveToIdx(oldCurrent);
 		dataChanged(oldIdx, oldIdx, roles);
 	}
-	if (current_dive) {
+	if (current_dive && oldCurrent != current_dive) {
 		QModelIndex newIdx = diveToIdx(current_dive);
 		dataChanged(newIdx, newIdx, roles);
 	}
 #else
+	if (oldCurrent == current_dive)
+		return;
 	if (current_dive) {
 		QModelIndex newIdx = diveToIdx(current_dive);
 		emit currentDiveChanged(newIdx);
@@ -714,11 +725,15 @@ DiveTripModelTree::DiveTripModelTree(QObject *parent) : DiveTripModelBase(parent
 
 void DiveTripModelTree::populate()
 {
+	DiveFilter::instance()->reset(); // The data was reset - update filter status. TODO: should this really be done here?
+
 	// we want this to be two calls as the second text is overwritten below by the lines starting with "\r"
 	uiNotification(QObject::tr("populate data model"));
 	uiNotification(QObject::tr("start processing"));
 	for (int i = 0; i < dive_table.nr; ++i) {
 		dive *d = get_dive(i);
+		if (!d) // should never happen
+			continue;
 		update_cylinder_related_info(d);
 		if (d->hidden_by_filter)
 			continue;
@@ -1328,8 +1343,8 @@ void DiveTripModelTree::divesMovedBetweenTrips(dive_trip *from, dive_trip *to, b
 	// Cheating!
 	// Unfortunately, removing the dives means that their selection is lost.
 	// Thus, remember the selection and re-add it later.
-	divesAdded(to, createTo, dives);
 	divesDeletedInternal(from, deleteFrom, dives); // Use internal version to keep current dive
+	divesAdded(to, createTo, dives);
 }
 
 void DiveTripModelTree::divesTimeChanged(timestamp_t delta, const QVector<dive *> &dives)
@@ -1479,11 +1494,13 @@ DiveTripModelList::DiveTripModelList(QObject *parent) : DiveTripModelBase(parent
 
 void DiveTripModelList::populate()
 {
+	DiveFilter::instance()->reset(); // The data was reset - update filter status. TODO: should this really be done here?
+
 	// Fill model
 	items.reserve(dive_table.nr);
 	for (int i = 0; i < dive_table.nr; ++i) {
 		dive *d = get_dive(i);
-		if (d->hidden_by_filter)
+		if (!d || d->hidden_by_filter)
 			continue;
 		items.push_back(d);
 	}

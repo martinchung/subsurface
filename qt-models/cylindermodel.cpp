@@ -230,7 +230,7 @@ QVariant CylindersModel::data(const QModelIndex &index, int role) const
 				return QStringLiteral("*");
 			} else {
 				pressure_t modpO2;
-				modpO2.mbar = prefs.bottompo2;
+				modpO2.mbar = inPlanner ? prefs.bottompo2 : prefs.modpO2 * 1000;
 				return get_depth_string(gas_mod(cyl->gasmix, modpO2, d, M_OR_FT(1,1)), true);
 			}
 		case MND:
@@ -357,7 +357,7 @@ bool CylindersModel::setData(const QModelIndex &index, const QVariant &value, in
 	// First, we make a shallow copy of the old cylinder. Then we modify the fields inside that copy.
 	// At the end, we either place an EditCylinder undo command (EquipmentTab) or copy the cylinder back (planner).
 	// Yes, this is not ideal, but the pragmatic thing to do for now.
-	cylinder_t cyl = d->cylinders.cylinders[row];
+	cylinder_t cyl = *get_cylinder(d, row);
 
 	if (index.column() != TYPE && !changed)
 		return false;
@@ -429,11 +429,11 @@ bool CylindersModel::setData(const QModelIndex &index, const QVariant &value, in
 			if (QString::compare(qPrintable(vString), "*") == 0) {
 				cyl.bestmix_o2 = true;
 				// Calculate fO2 for max. depth
-				cyl.gasmix.o2 = best_o2(d->maxdepth, d);
+				cyl.gasmix.o2 = best_o2(d->maxdepth, d, inPlanner);
 			} else {
 				cyl.bestmix_o2 = false;
 				// Calculate fO2 for input depth
-				cyl.gasmix.o2 = best_o2(string_to_depth(qPrintable(vString)), d);
+				cyl.gasmix.o2 = best_o2(string_to_depth(qPrintable(vString)), d, inPlanner);
 			}
 			pressure_t modpO2;
 			modpO2.mbar = prefs.decopo2;
@@ -467,7 +467,7 @@ bool CylindersModel::setData(const QModelIndex &index, const QVariant &value, in
 		// In the planner - simply overwrite the cylinder in the dive with the modified cylinder.
 		// We have only made a shallow copy, therefore copy the new cylinder first.
 		cylinder_t copy = clone_cylinder(cyl);
-		std::swap(copy, d->cylinders.cylinders[row]);
+		std::swap(copy, *get_cylinder(d, row));
 		free_cylinder(copy);
 		dataChanged(index, index);
 	} else {
@@ -643,7 +643,7 @@ bool CylindersModel::updateBestMixes()
 	for (int i = 0; i < d->cylinders.nr; i++) {
 		cylinder_t *cyl = get_cylinder(d, i);
 		if (cyl->bestmix_o2) {
-			cyl->gasmix.o2 = best_o2(d->maxdepth, d);
+			cyl->gasmix.o2 = best_o2(d->maxdepth, d, inPlanner);
 			// fO2 + fHe must not be greater than 1
 			if (get_o2(cyl->gasmix) + get_he(cyl->gasmix) > 1000)
 				cyl->gasmix.he.permille = 1000 - get_o2(cyl->gasmix);

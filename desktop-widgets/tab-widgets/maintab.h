@@ -9,9 +9,6 @@
 #define MAINTAB_H
 
 #include <QTabWidget>
-#include <QDialog>
-#include <QMap>
-#include <QUuid>
 
 #include "ui_maintab.h"
 #include "qt-models/completionmodels.h"
@@ -28,10 +25,7 @@ class MainTab : public QTabWidget {
 public:
 	MainTab(QWidget *parent = 0);
 	void clearTabs();
-	void reload();
-	void initialUiSetup();
 	bool isEditing();
-	void updateCoordinatesText(qreal lat, qreal lon);
 	void refreshDisplayedDiveSite();
 	void nextInputField(QKeyEvent *event);
 	void stealFocus();
@@ -67,6 +61,7 @@ slots:
 	void enableEdition();
 	void escDetected(void);
 	void updateDateTimeFields();
+	void colorsChanged();
 private:
 	Ui::MainTab ui;
 	bool editMode;
@@ -80,6 +75,8 @@ private:
 	dive_trip *currentTrip;
 	QList<TabBase*> extraWidgets;
 	void divesEdited(int num); // Opens a warning window if more than one dive was edited
+	void changeEvent(QEvent *ev) override;
+	bool isDark;
 };
 
 #endif // MAINTAB_H

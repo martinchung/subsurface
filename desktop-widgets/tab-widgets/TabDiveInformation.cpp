@@ -15,7 +15,6 @@
 
 #define COMBO_CHANGED 0
 #define TEXT_EDITED 1
-#define CSS_SET_HEADING_BLUE "QLabel { color: mediumblue;} "
 
 TabDiveInformation::TabDiveInformation(QWidget *parent) : TabBase(parent), ui(new Ui::TabDiveInformation())
 {
@@ -24,10 +23,11 @@ TabDiveInformation::TabDiveInformation(QWidget *parent) : TabBase(parent), ui(ne
 	connect(&diveListNotifier, &DiveListNotifier::cylinderAdded, this, &TabDiveInformation::cylinderChanged);
 	connect(&diveListNotifier, &DiveListNotifier::cylinderRemoved, this, &TabDiveInformation::cylinderChanged);
 	connect(&diveListNotifier, &DiveListNotifier::cylinderEdited, this, &TabDiveInformation::cylinderChanged);
+
 	QStringList atmPressTypes { "mbar", get_depth_unit() ,tr("Use DC")};
 	ui->atmPressType->insertItems(0, atmPressTypes);
 	pressTypeIndex = 0;
-	ui->waterTypeCombo->insertItems(0, waterTypes);
+	ui->waterTypeCombo->insertItems(0, getWaterTypesAsString());
 
 	// This needs to be the same order as enum dive_comp_type in dive.h!
 	QStringList types;
@@ -35,17 +35,6 @@ TabDiveInformation::TabDiveInformation(QWidget *parent) : TabBase(parent), ui(ne
 		types.append(gettextFromC::tr(divemode_text_ui[i]));
 	ui->diveType->insertItems(0, types);
 	connect(ui->diveType, SIGNAL(currentIndexChanged(int)), this, SLOT(diveModeChanged(int)));
-	QString CSSSetSmallLabel = "QLabel { color: mediumblue; font-size: " +                           // Using label height
-		QString::number((int)(0.5 + ui->diveHeadingLabel->geometry().height() * 0.66)) + "px;}"; // .. set CSS font size of star widget subscripts
-	ui->scrollAreaWidgetContents_3->setStyleSheet("QGroupBox::title { color: mediumblue;} ");
-	ui->diveHeadingLabel->setStyleSheet(CSS_SET_HEADING_BLUE);
-	ui->gasHeadingLabel->setStyleSheet(CSS_SET_HEADING_BLUE);
-	ui->environmentHeadingLabel->setStyleSheet(CSS_SET_HEADING_BLUE);
-	ui->groupBox_visibility->setStyleSheet(CSSSetSmallLabel);
-	ui->groupBox_current->setStyleSheet(CSSSetSmallLabel);
-	ui->groupBox_wavesize->setStyleSheet(CSSSetSmallLabel);
-	ui->groupBox_surge->setStyleSheet(CSSSetSmallLabel);
-	ui->groupBox_chill->setStyleSheet(CSSSetSmallLabel);
 	if (!prefs.extraEnvironmentalDefault) // if extraEnvironmental preference is turned off
 		showCurrentWidget(false, 0);  // Show current star widget at lefthand side
 	QAction *action = new QAction(tr("OK"), this);
@@ -233,7 +222,7 @@ void TabDiveInformation::updateData()
 		if (prefs.salinityEditDefault) {   //If edit-salinity is enabled then set correct water type in combobox:
 			ui->waterTypeCombo->setCurrentIndex(updateSalinityComboIndex(salinity_value));
 		} else {         // If water salinity is not editable: show water type as a text label
-                        ui->waterTypeText->setText(get_water_type_string(salinity_value));
+			ui->waterTypeText->setText(get_water_type_string(salinity_value));
 		}
 		ui->salinityText->setText(get_salinity_string(salinity_value));
 	} else {
@@ -253,6 +242,19 @@ void TabDiveInformation::updateData()
 		showCurrentWidget(true, 2);   // Show current star widget at 3rd position
 	else
 		showCurrentWidget(false, 0);  // Show current star widget at lefthand side
+}
+
+void TabDiveInformation::updateUi(QString titleColor)
+{
+	QString CSSSetSmallLabel = "QLabel:enabled { color: ";
+	CSSSetSmallLabel.append(titleColor + "; font-size: ");
+	CSSSetSmallLabel.append(QString::number((int)(0.5 + ui->diveHeadingLabel->geometry().height() * 0.66)) + "px;}");
+	ui->groupBox_visibility->setStyleSheet(ui->groupBox_visibility->styleSheet() + CSSSetSmallLabel);
+	ui->groupBox_current->setStyleSheet(ui->groupBox_current->styleSheet() + CSSSetSmallLabel);
+	ui->groupBox_wavesize->setStyleSheet(ui->groupBox_wavesize->styleSheet() + CSSSetSmallLabel);
+	ui->groupBox_surge->setStyleSheet(ui->groupBox_surge->styleSheet() + CSSSetSmallLabel);
+	ui->groupBox_chill->setStyleSheet(ui->groupBox_chill->styleSheet() + CSSSetSmallLabel);
+	ui->salinityOverWrittenIcon->setToolTip(ui->salinityOverWrittenIcon->styleSheet() + CSSSetSmallLabel);
 }
 
 // From the index of the water type combo box, set the dive->salinity to an appropriate value
@@ -314,7 +316,6 @@ void TabDiveInformation::divesChanged(const QVector<dive *> &dives, DiveField fi
 	if (!current_dive || !dives.contains(current_dive))
 		return;
 
-	bool replot = false;
 	if (field.visibility)
 		ui->visibility->setCurrentStars(current_dive->visibility);
 	if (field.wavesize)
@@ -325,10 +326,8 @@ void TabDiveInformation::divesChanged(const QVector<dive *> &dives, DiveField fi
 		ui->surge->setCurrentStars(current_dive->surge);
 	if (field.chill)
 		ui->chill->setCurrentStars(current_dive->chill);
-	if (field.mode) {
+	if (field.mode)
 		updateMode(current_dive);
-		replot = true;
-	}
 	if (field.duration || field.depth || field.mode)
 		updateProfile();
 	if (field.air_temp)
@@ -345,10 +344,6 @@ void TabDiveInformation::divesChanged(const QVector<dive *> &dives, DiveField fi
 		salinity_value = current_dive->salinity;
 	ui->waterTypeCombo->setCurrentIndex(updateSalinityComboIndex(salinity_value));
 	ui->salinityText->setText(QString("%L1g/ℓ").arg(salinity_value / 10.0));
-	// TODO: The profile should recognize itself when the dive mode changed.
-	// It seem awkward to route this via the dive-information tab.
-	if (replot)
-		MainWindow::instance()->graphics->plotDive(current_dive, true);
 }
 
 void TabDiveInformation::on_visibility_valueChanged(int value)

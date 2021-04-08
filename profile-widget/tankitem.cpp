@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "profile-widget/tankitem.h"
-#include "qt-models/diveplotdatamodel.h"
+#include "profile-widget/divecartesianaxis.h"
 #include "profile-widget/divetextitem.h"
+#include "core/dive.h"
+#include "core/event.h"
 #include "core/profile.h"
 #include <QPen>
 
 static const qreal height = 3.0;
 
-TankItem::TankItem(QObject *parent) :
-	QObject(parent),
+TankItem::TankItem(const DiveCartesianAxis &axis) :
+	hAxis(axis),
 	plotEndTime(-1)
 {
 	QColor red(PERSIANRED1);
@@ -29,31 +31,12 @@ TankItem::TankItem(QObject *parent) :
 	trimixGradient.setColorAt(1.0, red);
 	trimix = trimixGradient;
 	air = blue;
-	hAxis = nullptr;
-}
-
-void TankItem::setData(DivePlotDataModel *model, struct plot_info *plotInfo, struct dive *d)
-{
-	// If there is nothing to plot, quit early.
-	if (plotInfo->nr <= 0) {
-		plotEndTime = -1;
-		return;
-	}
-
-	// Find correct end of the dive plot for correct end of the tankbar.
-	struct plot_data *last_entry = &plotInfo->entry[plotInfo->nr - 1];
-	plotEndTime = last_entry->sec;
-
-	// Stay informed of changes to the tanks.
-	connect(model, SIGNAL(dataChanged(QModelIndex, QModelIndex)), this, SLOT(modelDataChanged(QModelIndex, QModelIndex)), Qt::UniqueConnection);
-
-	modelDataChanged();
 }
 
 void TankItem::createBar(int startTime, int stopTime, struct gasmix gas)
 {
-	qreal x = hAxis->posAtValue(startTime);
-	qreal w = hAxis->posAtValue(stopTime) - hAxis->posAtValue(startTime);
+	qreal x = hAxis.posAtValue(startTime);
+	qreal w = hAxis.posAtValue(stopTime) - hAxis.posAtValue(startTime);
 
 	// pick the right gradient, size, position and text
 	QGraphicsRectItem *rect = new QGraphicsRectItem(x, 0, w, height, this);
@@ -78,8 +61,21 @@ void TankItem::createBar(int startTime, int stopTime, struct gasmix gas)
 	label->setZValue(101);
 }
 
-void TankItem::modelDataChanged(const QModelIndex&, const QModelIndex&)
+void TankItem::setData(const struct plot_info *plotInfo, const struct dive *d)
 {
+	if (!d)
+		return;
+
+	// If there is nothing to plot, quit early.
+	if (plotInfo->nr <= 0) {
+		plotEndTime = -1;
+		return;
+	}
+
+	// Find correct end of the dive plot for correct end of the tankbar.
+	const struct plot_data *last_entry = &plotInfo->entry[plotInfo->nr - 1];
+	plotEndTime = last_entry->sec;
+
 	// We don't have enougth data to calculate things, quit.
 	if (plotEndTime < 0)
 		return;
@@ -89,15 +85,16 @@ void TankItem::modelDataChanged(const QModelIndex&, const QModelIndex&)
 	rects.clear();
 
 	// Bail if there are no cylinders
-	if (displayed_dive.cylinders.nr <= 0)
+	if (d->cylinders.nr <= 0)
 		return;
 
-	// get the information directly from the displayed_dive (the dc always exists)
-	struct divecomputer *dc = get_dive_dc(&displayed_dive, dc_number);
+	// get the information directly from the displayed dive
+	// (get_dive_dc() always returns a valid dive computer)
+	const struct divecomputer *dc = get_dive_dc_const(d, dc_number);
 
 	// start with the first gasmix and at the start of the dive
-	int cyl = explicit_first_cylinder(&displayed_dive, dc);
-	struct gasmix gasmix = get_cylinder(&displayed_dive, cyl)->gasmix;
+	int cyl = explicit_first_cylinder(d, dc);
+	struct gasmix gasmix = get_cylinder(d, cyl)->gasmix;
 	int startTime = 0;
 
 	// work through all the gas changes and add the rectangle for each gas while it was used
@@ -105,15 +102,8 @@ void TankItem::modelDataChanged(const QModelIndex&, const QModelIndex&)
 	while (ev && (int)ev->time.seconds < plotEndTime) {
 		createBar(startTime, ev->time.seconds, gasmix);
 		startTime = ev->time.seconds;
-		gasmix = get_gasmix_from_event(&displayed_dive, ev);
+		gasmix = get_gasmix_from_event(d, ev);
 		ev = get_next_event(ev->next, "gaschange");
 	}
 	createBar(startTime, plotEndTime, gasmix);
-}
-
-void TankItem::setHorizontalAxis(DiveCartesianAxis *horizontal)
-{
-	hAxis = horizontal;
-	connect(hAxis, SIGNAL(sizeChanged()), this, SLOT(modelDataChanged()));
-	modelDataChanged();
 }

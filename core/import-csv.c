@@ -1,18 +1,21 @@
 #include <unistd.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <libdivecomputer/parser.h>
 
+#include "dive.h"
 #include "errorhelper.h"
 #include "ssrf.h"
 #include "subsurface-string.h"
 #include "divelist.h"
 #include "file.h"
 #include "parse.h"
-#include "subsurface-time.h"
+#include "sample.h"
 #include "divelist.h"
 #include "gettext.h"
 #include "import-csv.h"
 #include "qthelper.h"
+#include "xmlparams.h"
 
 #define MATCH(buffer, pattern) \
 	memcmp(buffer, pattern, strlen(pattern))
@@ -103,16 +106,18 @@ static char *parse_dan_new_line(char *buf, const char *NL)
 }
 
 static int try_to_xslt_open_csv(const char *filename, struct memblock *mem, const char *tag);
-static int parse_dan_format(const char *filename, char **params, int pnr, struct dive_table *table,
-			    struct trip_table *trips, struct dive_site_table *sites)
+static int parse_dan_format(const char *filename, struct xml_params *params, struct dive_table *table,
+			    struct trip_table *trips, struct dive_site_table *sites, struct device_table *devices,
+			    struct filter_preset_table *filter_presets)
 {
 	int ret = 0, i;
 	size_t end_ptr = 0;
 	struct memblock mem, mem_csv;
 	char tmpbuf[MAXCOLDIGITS];
+	int params_orig_size = xml_params_count(params);
 
 	char *ptr = NULL;
-	char *NL = NULL;
+	const char *NL = NULL;
 	char *iter = NULL;
 
 	if (readfile(filename, &mem) < 0)
@@ -129,8 +134,8 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 	}
 
 	while ((end_ptr < mem.size) && (ptr = strstr(mem.buffer + end_ptr, "ZDH"))) {
+		xml_params_resize(params, params_orig_size); // restart with original parameter block
 		char *iter_end = NULL;
-		unsigned int pnr_local = pnr;
 
 		mem_csv.buffer = malloc(mem.size + 1);
 		mem_csv.size = mem.size;
@@ -140,8 +145,7 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 		if (iter) {
 			memcpy(tmpbuf, ptr + 4, iter - ptr - 4);
 			tmpbuf[iter - ptr - 4] = 0;
-			params[pnr_local++] = "diveNro";
-			params[pnr_local++] = strdup(tmpbuf);
+			xml_params_add(params, "diveNro", tmpbuf);
 		}
 
 		//fprintf(stderr, "DEBUG: BEGIN end_ptr %d round %d <%s>\n", end_ptr, j++, ptr);
@@ -160,8 +164,7 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 		/* Setting date */
 		memcpy(tmpbuf, iter, 8);
 		tmpbuf[8] = 0;
-		params[pnr_local++] = "date";
-		params[pnr_local++] = strdup(tmpbuf);
+		xml_params_add(params, "date", tmpbuf);
 
 		/* Setting time, gotta prepend it with 1 to
 		 * avoid octal parsing (this is stripped out in
@@ -169,8 +172,7 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 		tmpbuf[0] = '1';
 		memcpy(tmpbuf + 1, iter + 8, 6);
 		tmpbuf[7] = 0;
-		params[pnr_local++] = "time";
-		params[pnr_local++] = strdup(tmpbuf);
+		xml_params_add(params, "time", tmpbuf);
 
 		/* Air temperature */
 		memset(tmpbuf, 0, sizeof(tmpbuf));
@@ -182,11 +184,9 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 
 			if (iter_end) {
 				memcpy(tmpbuf, iter, iter_end - iter);
-				params[pnr_local++] = "airTemp";
-				params[pnr_local++] = strdup(tmpbuf);
+				xml_params_add(params, "airTemp", tmpbuf);
 			}
 		}
-		params[pnr_local] = NULL;
 
 		/* Search for the next line */
 		if (iter)
@@ -209,12 +209,10 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 
 				if (iter_end) {
 					memcpy(tmpbuf, iter, iter_end - iter);
-					params[pnr_local++] = "waterTemp";
-					params[pnr_local++] = strdup(tmpbuf);
+					xml_params_add(params, "waterTemp", tmpbuf);
 				}
 			}
-			params[pnr_local] = NULL;
-			ret |= parse_xml_buffer(filename, "<csv></csv>", 11, table, trips, sites, (const char **)params);
+			ret |= parse_xml_buffer(filename, "<csv></csv>", 11, table, trips, sites, devices, filter_presets, params);
 			continue;
 		}
 
@@ -261,32 +259,29 @@ static int parse_dan_format(const char *filename, char **params, int pnr, struct
 
 				if (iter_end) {
 					memcpy(tmpbuf, iter, iter_end - iter);
-					params[pnr_local++] = "waterTemp";
-					params[pnr_local++] = strdup(tmpbuf);
+					xml_params_add(params, "waterTemp", tmpbuf);
 				}
 			}
-			params[pnr_local] = NULL;
 		}
 
 		if (try_to_xslt_open_csv(filename, &mem_csv, "csv"))
 			return -1;
 
-		ret |= parse_xml_buffer(filename, mem_csv.buffer, mem_csv.size, table, trips, sites, (const char **)params);
+		ret |= parse_xml_buffer(filename, mem_csv.buffer, mem_csv.size, table, trips, sites, devices, filter_presets, params);
 		end_ptr += ptr - (char *)mem_csv.buffer;
 		free(mem_csv.buffer);
 	}
 
 	free(mem.buffer);
-	for (i = 0; params[i]; i += 2)
-		free(params[i + 1]);
 
 	return ret;
 }
 
-int parse_csv_file(const char *filename, char **params, int pnr, const char *csvtemplate,
-		   struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+int parse_csv_file(const char *filename, struct xml_params *params, const char *csvtemplate,
+		   struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites,
+		   struct device_table *devices, struct filter_preset_table *filter_presets)
 {
-	int ret, i;
+	int ret;
 	struct memblock mem;
 	time_t now;
 	struct tm *timep = NULL;
@@ -304,22 +299,19 @@ int parse_csv_file(const char *filename, char **params, int pnr, const char *csv
 
 	mem.size = 0;
 	if (!strcmp("DL7", csvtemplate)) {
-		return parse_dan_format(filename, params, pnr, table, trips, sites);
-	} else if (strcmp(params[0], "date")) {
+		return parse_dan_format(filename, params, table, trips, sites, devices, filter_presets);
+	} else if (strcmp(xml_params_get_key(params, 0), "date")) {
 		time(&now);
 		timep = localtime(&now);
 
 		strftime(tmpbuf, MAXCOLDIGITS, "%Y%m%d", timep);
-		params[pnr++] = "date";
-		params[pnr++] = strdup(tmpbuf);
+		xml_params_add(params, "date", tmpbuf);
 
 		/* As the parameter is numeric, we need to ensure that the leading zero
 		 * is not discarded during the transform, thus prepend time with 1 */
 
 		strftime(tmpbuf, MAXCOLDIGITS, "1%H%M", timep);
-		params[pnr++] = "time";
-		params[pnr++] = strdup(tmpbuf);
-		params[pnr++] = NULL;
+		xml_params_add(params, "time", tmpbuf);
 	}
 
 	if (try_to_xslt_open_csv(filename, &mem, csvtemplate))
@@ -334,16 +326,14 @@ int parse_csv_file(const char *filename, char **params, int pnr, const char *csv
 #ifndef SUBSURFACE_MOBILE
 	if (verbose >= 2) {
 		fprintf(stderr, "(echo '<csv>'; cat %s;echo '</csv>') | xsltproc ", filename);
-		for (i=0; params[i]; i+=2)
-			fprintf(stderr, "--stringparam %s %s ", params[i], params[i+1]);
+		for (int i = 0; i < xml_params_count(params); i++)
+			fprintf(stderr, "--stringparam %s %s ", xml_params_get_key(params, i), xml_params_get_value(params, i));
 		fprintf(stderr, "%s/xslt/%s -\n", SUBSURFACE_SOURCE, csvtemplate);
 	}
 #endif
-	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, (const char **)params);
+	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, devices, filter_presets, params);
 
 	free(mem.buffer);
-	for (i = 0; params[i]; i += 2)
-		free(params[i + 1]);
 
 	return ret;
 }
@@ -511,7 +501,8 @@ static char *next_mkvi_key(const char *haystack)
 	return ret;
 }
 
-int parse_txt_file(const char *filename, const char *csv, struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+int parse_txt_file(const char *filename, const char *csv, struct dive_table *table, struct trip_table *trips,
+		  struct dive_site_table *sites, struct device_table *devices)
 {
 	UNUSED(sites);
 	struct memblock memtxt, memcsv;
@@ -565,6 +556,8 @@ int parse_txt_file(const char *filename, const char *csv, struct dive_table *tab
 		cyl.type.description = "3l Mk6";
 		cyl.gasmix.o2.permille = 1000;
 		cyl.manually_added = true;
+		cyl.bestmix_o2 = 0;
+		cyl.bestmix_he = 0;
 		add_cloned_cylinder(&dive->cylinders, cyl);
 
 		cyl.cylinder_use = DILUENT;
@@ -805,25 +798,27 @@ int parse_txt_file(const char *filename, const char *csv, struct dive_table *tab
 #define TIMESTR 6
 
 #define SBPARAMS 40
-static int parse_seabear_csv_file(const char *filename, char **params, int pnr, const char *csvtemplate,
-				  struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites);
-int parse_seabear_log(const char *filename, struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+static int parse_seabear_csv_file(const char *filename, struct xml_params *params, const char *csvtemplate,
+				  struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites,
+				  struct device_table *devices, struct filter_preset_table *filter_presets);
+int parse_seabear_log(const char *filename, struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites,
+		      struct device_table *devices, struct filter_preset_table *filter_presets)
 {
-	char *params[SBPARAMS];
-	int pnr = 0;
+	struct xml_params *params = alloc_xml_params();
+	int ret;
 
-	pnr = parse_seabear_header(filename, params, pnr);
+	parse_seabear_header(filename, params);
+	ret = parse_seabear_csv_file(filename, params, "csv", table, trips, sites, devices, filter_presets) < 0 ? -1 : 0;
 
-	if (parse_seabear_csv_file(filename, params, pnr, "csv", table, trips, sites) < 0) {
-		return -1;
-	}
+	free_xml_params(params);
 
-	return 0;
+	return ret;
 }
 
 
-static int parse_seabear_csv_file(const char *filename, char **params, int pnr, const char *csvtemplate,
-				  struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+static int parse_seabear_csv_file(const char *filename, struct xml_params *params, const char *csvtemplate,
+				  struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites,
+				  struct device_table *devices, struct filter_preset_table *filter_presets)
 {
 	int ret, i;
 	struct memblock mem;
@@ -844,15 +839,12 @@ static int parse_seabear_csv_file(const char *filename, char **params, int pnr, 
 	timep = localtime(&now);
 
 	strftime(tmpbuf, MAXCOLDIGITS, "%Y%m%d", timep);
-	params[pnr++] = "date";
-	params[pnr++] = strdup(tmpbuf);
+	xml_params_add(params, "date", tmpbuf);
 
 	/* As the parameter is numeric, we need to ensure that the leading zero
 	* is not discarded during the transform, thus prepend time with 1 */
 	strftime(tmpbuf, MAXCOLDIGITS, "1%H%M", timep);
-	params[pnr++] = "time";
-	params[pnr++] = strdup(tmpbuf);
-
+	xml_params_add(params, "time", tmpbuf);
 
 	if (filename == NULL)
 		return report_error("No CSV filename");
@@ -876,8 +868,9 @@ static int parse_seabear_csv_file(const char *filename, char **params, int pnr, 
 			NL = "\n";
 		}
 		ptr_old += 2;
-	} else
+	} else {
 		ptr_old += 4;
+	}
 
 	/*
 	 * If file does not contain empty lines, it is not a valid
@@ -902,25 +895,26 @@ static int parse_seabear_csv_file(const char *filename, char **params, int pnr, 
 	 */
 
 	if (ptr) {
-		ptr += strlen(NL) + 2;
 		/*
-		 * pnr is the index of NULL on the params as filled by
-		 * the init function. The two last entries should be
-		 * date and time. Here we overwrite them with the data
-		 * from the CSV header.
+		 * The two last entries should be date and time.
+		 * Here we overwrite them with the data from the
+		 * CSV header.
 		 */
+		char buf[10];
 
-		memcpy(params[pnr - 3], ptr, 4);
-		memcpy(params[pnr - 3] + 4, ptr + 5, 2);
-		memcpy(params[pnr - 3] + 6, ptr + 8, 2);
-		params[pnr - 3][8] = 0;
+		ptr += strlen(NL) + 2;
+		memcpy(buf, ptr, 4);
+		memcpy(buf + 4, ptr + 5, 2);
+		memcpy(buf + 6, ptr + 8, 2);
+		buf[8] = 0;
+		xml_params_set_value(params, xml_params_count(params) - 2, buf);
 
-		memcpy(params[pnr - 1] + 1, ptr + 11, 2);
-		memcpy(params[pnr - 1] + 3, ptr + 14, 2);
-		params[pnr - 1][5] = 0;
+		buf[0] = xml_params_get_value(params, xml_params_count(params) - 1)[0];
+		memcpy(buf + 1, ptr + 11, 2);
+		memcpy(buf + 3, ptr + 14, 2);
+		buf[5] = 0;
+		xml_params_set_value(params, xml_params_count(params) - 1, buf);
 	}
-
-	params[pnr++] = NULL;
 
 	/* Move the CSV data to the start of mem buffer */
 	memmove(mem.buffer, ptr_old, mem.size - (ptr_old - (char*)mem.buffer));
@@ -937,27 +931,26 @@ static int parse_seabear_csv_file(const char *filename, char **params, int pnr, 
 
 	if (verbose >= 2) {
 		fprintf(stderr, "xsltproc ");
-		for (i=0; params[i]; i+=2)
-			fprintf(stderr, "--stringparam %s %s ", params[i], params[i+1]);
+		for (i = 0; i < xml_params_count(params); i++)
+			fprintf(stderr, "--stringparam %s %s ", xml_params_get_key(params, i), xml_params_get_value(params, i));
 		fprintf(stderr, "xslt/csv2xml.xslt\n");
 	}
 
-	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, (const char **)params);
+	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, devices, filter_presets, params);
 	free(mem.buffer);
-	for (i = 0; params[i]; i += 2)
-		free(params[i + 1]);
 
 	return ret;
 }
 
-int parse_manual_file(const char *filename, char **params, int pnr, struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+int parse_manual_file(const char *filename, struct xml_params *params, struct dive_table *table, struct trip_table *trips,
+		      struct dive_site_table *sites, struct device_table *devices, struct filter_preset_table *filter_presets)
 {
 	struct memblock mem;
 	time_t now;
 	struct tm *timep;
 	char curdate[9];
 	char curtime[6];
-	int ret, i;
+	int ret;
 
 
 	time(&now);
@@ -968,11 +961,8 @@ int parse_manual_file(const char *filename, char **params, int pnr, struct dive_
 	* is not discarded during the transform, thus prepend time with 1 */
 	strftime(curtime, TIMESTR, "1%H%M", timep);
 
-	params[pnr++] = strdup("date");
-	params[pnr++] = strdup(curdate);
-	params[pnr++] = strdup("time");
-	params[pnr++] = strdup(curtime);
-	params[pnr++] = NULL;
+	xml_params_add(params, "date", curdate);
+	xml_params_add(params, "time", curtime);
 
 	if (filename == NULL)
 		return report_error("No manual CSV filename");
@@ -984,15 +974,13 @@ int parse_manual_file(const char *filename, char **params, int pnr, struct dive_
 #ifndef SUBSURFACE_MOBILE
 	if (verbose >= 2) {
 		fprintf(stderr, "(echo '<manualCSV>'; cat %s;echo '</manualCSV>') | xsltproc ", filename);
-		for (i=0; params[i]; i+=2)
-			fprintf(stderr, "--stringparam %s %s ", params[i], params[i+1]);
+		for (int i = 0; i < xml_params_count(params); i++)
+			fprintf(stderr, "--stringparam %s %s ", xml_params_get_key(params, i), xml_params_get_value(params, i));
 		fprintf(stderr, "%s/xslt/manualcsv2xml.xslt -\n", SUBSURFACE_SOURCE);
 	}
 #endif
-	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, (const char **)params);
+	ret = parse_xml_buffer(filename, mem.buffer, mem.size, table, trips, sites, devices, filter_presets, params);
 
 	free(mem.buffer);
-	for (i = 0; i < pnr - 2; ++i)
-		free(params[i]);
 	return ret;
 }

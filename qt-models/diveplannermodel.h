@@ -38,46 +38,38 @@ public:
 	void cylinderRenumber(int mapping[]);
 	void removeSelectedPoints(const QVector<int> &rows);
 	void setPlanMode(Mode mode);
-	bool isPlanner();
-	void createSimpleDive();
-	void setupStartTime();
-	void clear();
+	bool isPlanner() const;
+	void createSimpleDive(struct dive *d);
 	Mode currentMode() const;
-	bool setRecalc(bool recalc);
-	bool recalcQ();
-	bool tankInUse(int cylinderid);
-	void setupCylinders();
-	bool updateMaxDepth();
+	bool tankInUse(int cylinderid) const;
 	CylindersModel *cylindersModel();
 
-	int ascrate75Display();
-	int ascrate50Display();
-	int ascratestopsDisplay();
-	int ascratelast6mDisplay();
-	int descrateDisplay();
+	int ascrate75Display() const;
+	int ascrate50Display() const;
+	int ascratestopsDisplay() const;
+	int ascratelast6mDisplay() const;
+	int descrateDisplay() const;
+	int getSurfacePressure() const;
 
 	/**
 	 * @return the row number.
 	 */
 	void editStop(int row, divedatapoint newData);
-	divedatapoint at(int row);
-	int size();
+	divedatapoint at(int row) const;
 	struct diveplan &getDiveplan();
-	int lastEnteredPoint();
-	void removeDeco();
-	static bool addingDeco;
 	struct deco_state final_deco_state;
 
+	void loadFromDive(dive *d);
+	void addStop(int millimeters, int seconds);
 public
 slots:
-	int addStop(int millimeters = 0, int seconds = 0, int cylinderid_in = -1, int ccpoint = 0, bool entered = true, enum divemode_t = UNDEF_COMP_TYPE);
+	void addDefaultStop();
 	void addCylinder_clicked();
 	void setGFHigh(const int gfhigh);
 	void setGFLow(const int gflow);
 	void setVpmbConservatism(int level);
 	void setSurfacePressure(int pressure);
 	void setSalinity(int salinity);
-	int getSurfacePressure();
 	void setBottomSac(double sac);
 	void setDecoSac(double sac);
 	void setStartTime(const QTime &t);
@@ -94,10 +86,10 @@ slots:
 	void savePlan();
 	void saveDuplicatePlan();
 	void remove(const QModelIndex &index);
+	void removeControlPressed(const QModelIndex &index);
 	void cancelPlan();
-	void createTemporaryPlan();
+	void removeDeco();
 	void deleteTemporaryPlan();
-	void loadFromDive(dive *d);
 	void emitDataChanged();
 	void setRebreatherMode(int mode);
 	void setReserveGas(int reserve);
@@ -116,23 +108,31 @@ signals:
 	void planCreated();
 	void planCanceled();
 	void cylinderModelEdited();
-	void startTimeChanged(QDateTime);
 	void recreationChanged(bool);
 	void calculatedPlanNotes(QString);
 	void variationsComputed(QString);
 
 private:
 	explicit DivePlannerPointsModel(QObject *parent = 0);
+	void clear();
+	int addStop(int millimeters, int seconds, int cylinderid_in, int ccpoint, bool entered, enum divemode_t);
+	void removePoints(const QVector<int> &rows);
+	void setupStartTime();
+	void setupCylinders();
+	int lastEnteredPoint() const;
+	bool updateMaxDepth();
 	void createPlan(bool replanCopy);
+	void updateDiveProfile(); // Creates a temporary plan and updates the dive profile with it.
+	void createTemporaryPlan();
 	struct diveplan diveplan;
 	struct divedatapoint *cloneDiveplan(struct diveplan *plan_src, struct diveplan *plan_copy);
 	void computeVariationsDone(QString text);
 	void computeVariations(struct diveplan *diveplan, const struct deco_state *ds);
 	void computeVariationsFreeDeco(struct diveplan *diveplan, struct deco_state *ds);
 	int analyzeVariations(struct decostop *min, struct decostop *mid, struct decostop *max, const char *unit);
+	struct dive *d;
 	CylindersModel cylinders;
 	Mode mode;
-	bool recalc;
 	QVector<divedatapoint> divepoints;
 	QDateTime startTime;
 	int instanceCounter = 0;

@@ -18,7 +18,7 @@ static QString str_error(const char *fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
-	const QString str = QString().vsprintf(fmt, args);
+	const QString str = QString::vasprintf(fmt, args);
 	va_end(args);
 
 	return str;
@@ -58,6 +58,27 @@ static void updateRememberedDCs()
 	qPrefDiveComputer::set_device1(qPrefDiveComputer::device());
 }
 
+#define NUMTRANSPORTS 7
+static QString transportStringTable[NUMTRANSPORTS] = {
+	QStringLiteral("SERIAL"),
+	QStringLiteral("USB"),
+	QStringLiteral("USBHID"),
+	QStringLiteral("IRDA"),
+	QStringLiteral("BT"),
+	QStringLiteral("BLE"),
+	QStringLiteral("USBSTORAGE"),
+};
+
+static QString getTransportString(unsigned int transport)
+{
+	QString ts;
+	for (int i = 0; i < NUMTRANSPORTS; i++) {
+		if (transport & 1 << i)
+			ts += transportStringTable[i] + ", ";
+	}
+	ts.chop(2);
+	return ts;
+}
 
 DownloadThread::DownloadThread() : downloadTable({ 0 }),
 	diveSiteTable({ 0 }),
@@ -71,15 +92,26 @@ void DownloadThread::run()
 	internalData->descriptor = descriptorLookup[m_data->vendor().toLower() + m_data->product().toLower()];
 	internalData->download_table = &downloadTable;
 	internalData->sites = &diveSiteTable;
+	internalData->devices = &deviceTable;
 	internalData->btname = strdup(m_data->devBluetoothName().toUtf8());
 	if (!internalData->descriptor) {
 		qDebug() << "No download possible when DC type is unknown";
 		return;
 	}
-	qDebug() << "Starting download from " << (internalData->bluetooth_mode ? "BT" : internalData->devname);
+	// get the list of transports that this device supports and filter depending on Bluetooth option
+	unsigned int transports = dc_descriptor_get_transports(internalData->descriptor);
+	if (internalData->bluetooth_mode)
+		transports &= (DC_TRANSPORT_BLE | DC_TRANSPORT_BLUETOOTH);
+	else
+		transports &= ~(DC_TRANSPORT_BLE | DC_TRANSPORT_BLUETOOTH);
+	if (transports == DC_TRANSPORT_USBHID)
+		internalData->devname = "";
+
+	qDebug() << "Starting download from " << getTransportString(transports);
 	qDebug() << "downloading" << (internalData->force_download ? "all" : "only new") << "dives";
 	clear_dive_table(&downloadTable);
 	clear_dive_site_table(&diveSiteTable);
+	clear_device_table(&deviceTable);
 
 	Q_ASSERT(internalData->download_table != nullptr);
 	const char *errorText;
@@ -162,28 +194,6 @@ void fill_computer_list()
 #endif
 
 	std::sort(vendorList.begin(), vendorList.end());
-}
-
-#define NUMTRANSPORTS 7
-static QString transportStringTable[NUMTRANSPORTS] = {
-	QStringLiteral("SERIAL"),
-	QStringLiteral("USB"),
-	QStringLiteral("USBHID"),
-	QStringLiteral("IRDA"),
-	QStringLiteral("BT"),
-	QStringLiteral("BLE"),
-	QStringLiteral("USBSTORAGE"),
-};
-
-static QString getTransportString(unsigned int transport)
-{
-	QString ts;
-	for (int i = 0; i < NUMTRANSPORTS; i++) {
-		if (transport & 1 << i)
-			ts += transportStringTable[i] + ", ";
-	}
-	ts.chop(2);
-	return ts;
 }
 
 void show_computer_list()

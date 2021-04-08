@@ -101,16 +101,16 @@ void BLEObject::writeCompleted(const QLowEnergyDescriptor&, const QByteArray&)
 	desc_written++;
 }
 
-struct uud_match {
+struct uuid_match {
 	const char *uuid, *details;
 };
 
-static const char *match_service(const QBluetoothUuid &service, const struct uud_match *array)
+static const char *match_uuid_list(const QBluetoothUuid &match, const struct uuid_match *array)
 {
 	const char *uuid;
 
 	while ((uuid = array->uuid) != NULL) {
-		if (service == QUuid(uuid))
+		if (match == QUuid(uuid))
 			return array->details;
 		array++;
 	}
@@ -134,14 +134,14 @@ static const char *match_service(const QBluetoothUuid &service, const struct uud
 // not like legacy BT didn't have a standard serial encapsulation.
 // Oh. It did, didn't it?
 //
-static const struct uud_match serial_service_uuids[] = {
+static const struct uuid_match serial_service_uuids[] = {
 	{ "0000fefb-0000-1000-8000-00805f9b34fb", "Heinrichs-Weikamp" },
 	{ "544e326b-5b72-c6b0-1c46-41c1bc448118", "Mares BlueLink Pro" },
 	{ "6e400001-b5a3-f393-e0a9-e50e24dcca9e", "Nordic Semi UART" },
 	{ "98ae7120-e62e-11e3-badd-0002a5d5c51b", "Suunto (EON Steel/Core, G5)" },
 	{ "cb3c4555-d670-4670-bc20-b61dbc851e9a", "Pelagic (i770R, i200C, Pro Plus X, Geo 4.0)" },
 	{ "fdcdeaaa-295d-470e-bf15-04217b7aa0a0", "ScubaPro G2"},
-	{ "fe25c237-0ece-443c-b0aa-e02033e7029d", "Shearwater (Perdix/Teric)" },
+	{ "fe25c237-0ece-443c-b0aa-e02033e7029d", "Shearwater (Perdix/Teric/Peregrine)" },
 	{ NULL, }
 };
 
@@ -150,7 +150,7 @@ static const struct uud_match serial_service_uuids[] = {
 // that a service is NOT a serial service because we've seen that
 // people use it for firmware upgrades.
 //
-static const struct uud_match upgrade_service_uuids[] = {
+static const struct uuid_match upgrade_service_uuids[] = {
 	{ "00001530-1212-efde-1523-785feabcd123", "Nordic Upgrade" },
 	{ "9e5d1e47-5c13-43a0-8635-82ad38a1386f", "Broadcom Upgrade #1" },
 	{ "a86abc2d-d44c-442e-99f7-80059a873e36", "Broadcom Upgrade #2" },
@@ -159,12 +159,12 @@ static const struct uud_match upgrade_service_uuids[] = {
 
 static const char *is_known_serial_service(const QBluetoothUuid &service)
 {
-	return match_service(service, serial_service_uuids);
+	return match_uuid_list(service, serial_service_uuids);
 }
 
 static const char *is_known_bad_service(const QBluetoothUuid &service)
 {
-	return match_service(service, upgrade_service_uuids);
+	return match_uuid_list(service, upgrade_service_uuids);
 }
 
 void BLEObject::addService(const QBluetoothUuid &newService)
@@ -215,13 +215,21 @@ void BLEObject::addService(const QBluetoothUuid &newService)
 
 	auto service = controller->createServiceObject(newService, this);
 	if (service) {
-		qDebug() << " .. starting discovery";
+		// provide some visibility into what's happening in the log
+		service->connect(service, &QLowEnergyService::stateChanged,[=](QLowEnergyService::ServiceState newState) {
+			qDebug() << "   .. service state changed to" << newState;
+		});
+		service->connect(service, QOverload<QLowEnergyService::ServiceError>::of(&QLowEnergyService::error),
+				 [=](QLowEnergyService::ServiceError newError) {
+			qDebug() << "error discovering service details" << newError;
+		});
 		services.append(service);
+		qDebug() << "starting service characteristics discovery";
 		service->discoverDetails();
 	}
 }
 
-BLEObject::BLEObject(QLowEnergyController *c, dc_user_device_t *d)
+BLEObject::BLEObject(QLowEnergyController *c, device_data_t *d)
 {
 	controller = c;
 	device = d;
@@ -239,9 +247,32 @@ BLEObject::~BLEObject()
 	delete controller;
 }
 
+/*
+ * The McLean Extreme has just one vendor service, but then inside that
+ * service it has several characteristics, and it's not obvious which
+ * ones are the read/write ones.
+ *
+ * So just make sure to skip the ones we don't want.
+ *
+ * The proper ones are:
+ *
+ *   Microchip service UUID:  49535343-fe7d-4ae5-8fa9-9fafd205e455
+ *            TX characteristic: 49535343-1e4d-4bd9-ba61-23c647249616
+ *            RX characteristic: 49535343-8841-43f4-a8d4-ecbe34729bb3
+ */
+static const struct uuid_match skip_characteristics[] = {
+	{ "49535343-6daa-4d02-abf6-19569aca69fe", "McLean Extreme Avoid" },
+	{ "49535343-aca3-481c-91ec-d85e28a60318", "McLean Extreme Avoid" },
+	{ "49535343-026e-3a9b-954c-97daef17e26e", "McLean Extreme Avoid" },
+	{ "49535343-4c8a-39b3-2f49-511cff073b7e", "McLean Extreme Avoid" },
+	{ NULL, }
+};
+
 // a write characteristic needs Write or WriteNoResponse
 static bool is_write_characteristic(const QLowEnergyCharacteristic &c)
 {
+	if (match_uuid_list(c.uuid(), skip_characteristics))
+		return false;
 	return c.properties() &
 		 (QLowEnergyCharacteristic::Write |
 		  QLowEnergyCharacteristic::WriteNoResponse);
@@ -251,6 +282,8 @@ static bool is_write_characteristic(const QLowEnergyCharacteristic &c)
 // a descriptor to enable it
 static bool is_read_characteristic(const QLowEnergyCharacteristic &c)
 {
+	if (match_uuid_list(c.uuid(), skip_characteristics))
+		return false;
 	return !c.descriptors().empty() &&
 		(c.properties() &
 		  (QLowEnergyCharacteristic::Notify |
@@ -360,6 +393,8 @@ dc_status_t BLEObject::select_preferred_service(void)
 	// Wait for each service to finish discovering
 	foreach (const QLowEnergyService *s, services) {
 		WAITFOR(s->state() != QLowEnergyService::DiscoveringServices, BLE_TIMEOUT);
+		if (s->state() == QLowEnergyService::DiscoveringServices)
+			qDebug() << " .. service " << s->serviceUuid() << "still hasn't completed discovery - trouble ahead";
 	}
 
 	// Print out the services for debugging
@@ -485,13 +520,13 @@ dc_status_t BLEObject::setupHwTerminalIo(const QList<QLowEnergyCharacteristic> &
 // Bluez is broken, and doesn't have a sane way to query
 // whether to use a random address or not. So we have to
 // fake it.
-static int use_random_address(dc_user_device_t *user_device)
+static int use_random_address(device_data_t *user_device)
 {
 	return IS_SHEARWATER(user_device) || IS_GARMIN(user_device);
 }
 #endif
 
-dc_status_t qt_ble_open(void **io, dc_context_t *, const char *devaddr, dc_user_device_t *user_device)
+dc_status_t qt_ble_open(void **io, dc_context_t *, const char *devaddr, device_data_t *user_device)
 {
 	debugCounter = 0;
 	QLoggingCategory::setFilterRules(QStringLiteral("qt.bluetooth* = true"));
@@ -553,13 +588,27 @@ dc_status_t qt_ble_open(void **io, dc_context_t *, const char *devaddr, dc_user_
 	// Note that ble takes ownership of controller and henceforth deleting ble will
 	// take care of deleting controller.
 	BLEObject *ble = new BLEObject(controller, user_device);
-	ble->connect(controller, SIGNAL(serviceDiscovered(QBluetoothUuid)), SLOT(addService(QBluetoothUuid)));
-
-	qDebug() << "  .. discovering services";
+	// we used to call our addService function the moment a service was discovered, but that
+	// could cause us to try to discover the details of a characteristic while we were still serching
+	// for services, which can cause a failure in the Qt BLE stack.
+	// While that actual error was likely caused by a bug in BLE implementation of a dive computer,
+	// the underlying issue still seems worth addressing.
+	// Finish discovering the services, then add all those services and discover their characteristics.
+	ble->connect(controller, &QLowEnergyController::discoveryFinished, [=] {
+		qDebug() << "finished service discovery, start discovering characteristics";
+		foreach(QBluetoothUuid s, controller->services()) {
+			ble->addService(s);
+		}
+	});
+	ble->connect(controller, QOverload<QLowEnergyController::Error>::of(&QLowEnergyController::error), [=](QLowEnergyController::Error newError) {
+		qDebug() << "controler discovery error" << controller->errorString() << newError;
+	});
 
 	controller->discoverServices();
 
 	WAITFOR(controller->state() != QLowEnergyController::DiscoveringState, BLE_TIMEOUT);
+	if (controller->state() == QLowEnergyController::DiscoveringState)
+		qDebug() << "  .. even after waiting for the full BLE timeout, controller is still in discovering state";
 
 	qDebug() << " .. done discovering services";
 
@@ -593,7 +642,7 @@ dc_status_t qt_ble_open(void **io, dc_context_t *, const char *devaddr, dc_user_
 			QLowEnergyDescriptor d = l.first();
 
 			for (const QLowEnergyDescriptor &tmp: l) {
-				if (tmp.type() == QBluetoothUuid::ClientCharacteristicConfiguration) {
+				if (tmp.type() == QBluetoothUuid::DescriptorType::ClientCharacteristicConfiguration) {
 					d = tmp;
 					break;
 				}

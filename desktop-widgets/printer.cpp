@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "printer.h"
+#include "mainwindow.h"
 #include "templatelayout.h"
 #include "core/statistics.h"
 #include "core/qthelper.h"
@@ -7,20 +8,22 @@
 
 #include <algorithm>
 #include <QPainter>
+#include <QPrinter>
 #include <QtWebKitWidgets>
 #include <QWebElementCollection>
 #include <QWebElement>
 #include "profile-widget/profilewidget2.h"
 
-Printer::Printer(QPaintDevice *paintDevice, print_options *printOptions, template_options *templateOptions,  PrintMode printMode)
+Printer::Printer(QPaintDevice *paintDevice, const print_options &printOptions, const template_options &templateOptions, PrintMode printMode, bool inPlanner) :
+	paintDevice(paintDevice),
+	webView(new QWebView),
+	printOptions(printOptions),
+	templateOptions(templateOptions),
+	printMode(printMode),
+	inPlanner(inPlanner),
+	done(0),
+	dpi(0)
 {
-	this->paintDevice = paintDevice;
-	this->printOptions = printOptions;
-	this->templateOptions = templateOptions;
-	this->printMode = printMode;
-	dpi = 0;
-	done = 0;
-	webView = new QWebView();
 }
 
 Printer::~Printer()
@@ -28,15 +31,16 @@ Printer::~Printer()
 	delete webView;
 }
 
-void Printer::putProfileImage(QRect profilePlaceholder, QRect viewPort, QPainter *painter, struct dive *dive, QPointer<ProfileWidget2> profile)
+void Printer::putProfileImage(const QRect &profilePlaceholder, const QRect &viewPort, QPainter *painter,
+			      struct dive *dive, ProfileWidget2 *profile)
 {
 	int x = profilePlaceholder.x() - viewPort.x();
 	int y = profilePlaceholder.y() - viewPort.y();
 	// use the placeHolder and the viewPort position to calculate the relative position of the dive profile.
 	QRect pos(x, y, profilePlaceholder.width(), profilePlaceholder.height());
-	profile->plotDive(dive, true, true);
+	profile->plotDive(dive, 0, true, true);
 
-	if (!printOptions->color_selected) {
+	if (!printOptions.color_selected) {
 		QImage image(pos.width(), pos.height(), QImage::Format_ARGB32);
 		QPainter imgPainter(&image);
 		imgPainter.setRenderHint(QPainter::Antialiasing);
@@ -85,7 +89,7 @@ void Printer::flowRender()
 		} else {
 			// fill the page with background color
 			QRect fullPage(0, 0, pageSize.width(), pageSize.height());
-			QBrush fillBrush(templateOptions->color_palette.color1);
+			QBrush fillBrush(templateOptions.color_palette.color1);
 			painter.fillRect(fullPage, fillBrush);
 			QRegion reigon(0, 0, pageSize.width(), end - start);
 			viewPort.setRect(0, start, pageSize.width(), end - start);
@@ -111,7 +115,7 @@ void Printer::flowRender()
 	}
 	// render the remianing page
 	QRect fullPage(0, 0, pageSize.width(), pageSize.height());
-	QBrush fillBrush(templateOptions->color_palette.color1);
+	QBrush fillBrush(templateOptions.color_palette.color1);
 	painter.fillRect(fullPage, fillBrush);
 	QRegion reigon(0, 0, pageSize.width(), end - start);
 	webView->page()->mainFrame()->render(&painter, QWebFrame::ContentsLayer, reigon);
@@ -119,10 +123,10 @@ void Printer::flowRender()
 	painter.end();
 }
 
-void Printer::render(int Pages = 0)
+void Printer::render(int pages)
 {
 	// keep original preferences
-	QPointer<ProfileWidget2> profile = MainWindow::instance()->graphics;
+	ProfileWidget2 *profile = MainWindow::instance()->graphics;
 	int profileFrameStyle = profile->frameStyle();
 	int animationOriginal = qPrefDisplay::animation_speed();
 	double fontScale = profile->getFontPrintScale();
@@ -130,7 +134,7 @@ void Printer::render(int Pages = 0)
 
 	// apply printing settings to profile
 	profile->setFrameStyle(QFrame::NoFrame);
-	profile->setPrintMode(true, !printOptions->color_selected);
+	profile->setPrintMode(true, !printOptions.color_selected);
 	profile->setToolTipVisibile(false);
 	qPrefDisplay::set_animation_speed(0);
 
@@ -146,13 +150,17 @@ void Printer::render(int Pages = 0)
 
 	QSize originalSize = profile->size();
 	if (collection.count() > 0) {
-		printFontScale = (double)collection.at(0).geometry().size().height() / (double)profile->size().height();
-		profile->resize(collection.at(0).geometry().size());
+		// A "standard" profile has about 600 pixels in height.
+		// Scale the fonts in the printed profile accordingly.
+		// This is arbitrary, but it seems to work reasonably.
+		QSize size = collection[0].geometry().size();
+		printFontScale = size.height() / 600.0;
+		profile->resize(size);
 	}
 	profile->setFontPrintScale(printFontScale);
 
 	int elemNo = 0;
-	for (int i = 0; i < Pages; i++) {
+	for (int i = 0; i < pages; i++) {
 		// render the base Html template
 		webView->page()->mainFrame()->render(&painter, QWebFrame::ContentsLayer);
 
@@ -170,8 +178,8 @@ void Printer::render(int Pages = 0)
 		viewPort.adjust(0, pageSize.height(), 0, pageSize.height());
 
 		// rendering progress is 4/5 of total work
-		emit(progessUpdated(lrint((i * 80.0 / Pages) + done)));
-		if (i < Pages - 1 && printMode == Printer::PRINT)
+		emit(progessUpdated(lrint((i * 80.0 / pages) + done)));
+		if (i < pages - 1 && printMode == Printer::PRINT)
 			static_cast<QPrinter*>(paintDevice)->newPage();
 	}
 	painter.end();
@@ -185,7 +193,7 @@ void Printer::render(int Pages = 0)
 	qPrefDisplay::set_animation_speed(animationOriginal);
 
 	//replot the dive after returning the settings
-	profile->plotDive(current_dive, true, true);
+	profile->plotDive(current_dive, dc_number, true, true);
 }
 
 //value: ranges from 0 : 100 and shows the progress of the templating engine
@@ -195,16 +203,16 @@ void Printer::templateProgessUpdated(int value)
 	emit progessUpdated(done);
 }
 
-QString Printer::exportHtml() {
+QString Printer::exportHtml()
+{
 	TemplateLayout t(printOptions, templateOptions);
 	connect(&t, SIGNAL(progressUpdated(int)), this, SLOT(templateProgessUpdated(int)));
 	QString html;
 
-	if (printOptions->type == print_options::DIVELIST) {
-		html = t.generate();
-	} else if (printOptions->type == print_options::STATISTICS ) {
+	if (printOptions.type == print_options::DIVELIST)
+		html = t.generate(inPlanner);
+	else if (printOptions.type == print_options::STATISTICS )
 		html = t.generateStatistics();
-	}
 
 	// TODO: write html to file
 	return html;
@@ -216,7 +224,6 @@ void Printer::print()
 	if (printMode != Printer::PRINT) {
 		return;
 	}
-
 
 	QPrinter *printerPtr;
 	printerPtr = static_cast<QPrinter*>(paintDevice);
@@ -231,17 +238,15 @@ void Printer::print()
 	webView->page()->mainFrame()->setScrollBarPolicy(Qt::Vertical, Qt::ScrollBarAlwaysOff);
 
 	// export border width with at least 1 pixel
-	// templateOptions->borderwidth = std::max(1, pageSize.width() / 1000);
-	if (printOptions->type == print_options::DIVELIST) {
-		webView->setHtml(t.generate());
-	} else if (printOptions->type == print_options::STATISTICS ) {
+	// templateOptions.borderwidth = std::max(1, pageSize.width() / 1000);
+	if (printOptions.type == print_options::DIVELIST)
+		webView->setHtml(t.generate(inPlanner));
+	else if (printOptions.type == print_options::STATISTICS )
 		webView->setHtml(t.generateStatistics());
-	}
-	if (printOptions->color_selected && printerPtr->colorMode()) {
+	if (printOptions.color_selected && printerPtr->colorMode())
 		printerPtr->setColorMode(QPrinter::Color);
-	} else {
+	else
 		printerPtr->setColorMode(QPrinter::GrayScale);
-	}
 	// apply user settings
 	int divesPerPage;
 
@@ -252,13 +257,10 @@ void Printer::print()
 		divesPerPage = 1; // print each dive in a single page if the attribute is missing or malformed
 		//TODO: show warning
 	}
-	int Pages;
-	if (divesPerPage == 0) {
+	if (divesPerPage == 0)
 		flowRender();
-	} else {
-		Pages = qCeil(getTotalWork(printOptions) / (float)divesPerPage);
-		render(Pages);
-	}
+	else
+		render((t.numDives - 1) / divesPerPage + 1);
 }
 
 void Printer::previewOnePage()
@@ -270,12 +272,11 @@ void Printer::previewOnePage()
 		pageSize.setWidth(paintDevice->width());
 		webView->page()->setViewportSize(pageSize);
 		// initialize the border settings
-		// templateOptions->border_width = std::max(1, pageSize.width() / 1000);
-		if (printOptions->type == print_options::DIVELIST) {
-			webView->setHtml(t.generate());
-		} else if (printOptions->type == print_options::STATISTICS ) {
+		// templateOptions.border_width = std::max(1, pageSize.width() / 1000);
+		if (printOptions.type == print_options::DIVELIST)
+			webView->setHtml(t.generate(inPlanner));
+		else if (printOptions.type == print_options::STATISTICS )
 			webView->setHtml(t.generateStatistics());
-		}
 		bool ok;
 		int divesPerPage = webView->page()->mainFrame()->findFirstElement("body").attribute("data-numberofdives").toInt(&ok);
 		if (!ok) {

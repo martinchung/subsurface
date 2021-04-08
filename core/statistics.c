@@ -6,16 +6,20 @@
  * void calculate_stats_summary(struct stats_summary *out, bool selected_only);
  * void calculate_stats_selected(stats_t *stats_selection);
  */
-#include "gettext.h"
-#include <string.h>
-#include <ctype.h>
 
+#include "statistics.h"
 #include "dive.h"
 #include "display.h"
+#include "event.h"
+#include "gettext.h"
+#include "sample.h"
 #include "subsurface-time.h"
 #include "trip.h"
-#include "statistics.h"
 #include "units.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 
 static void process_temperatures(struct dive *dp, stats_t *stats)
 {
@@ -397,7 +401,7 @@ static void get_gas_parts(struct gasmix mix, volume_t vol, int o2_in_topup, volu
 		return;
 	}
 
-	air.mliter = lrint(((double)vol.mliter * (1000 - get_he(mix) - get_o2(mix))) / (1000 - o2_in_topup));
+	air.mliter = lrint(((double)vol.mliter * get_n2(mix)) / (1000 - o2_in_topup));
 	he->mliter = lrint(((double)vol.mliter * get_he(mix)) / 1000.0);
 	o2->mliter += vol.mliter - he->mliter - air.mliter;
 }

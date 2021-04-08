@@ -11,21 +11,41 @@ Controls.TextField {
 	property var flickable
 	property bool firstTime: true
 
+	/**
+	 * set inComboBox if the TextField is used in an editable ComboBox
+	 * this ensures that the baseline that is used to visually indicate that the user can
+	 * edit the text as well as use the drop down is placed much closer to the actual text
+	 */
+	property bool inComboBox: false
+
 	id: stf
+	background: Item {
+		Rectangle {
+			width: parent.width - Kirigami.Units.smallSpacing
+			x: inComboBox ? Kirigami.Units.smallSpacing : -1
+			height: 1
+			color: stf.focus ? subsurfaceTheme.primaryColor : Qt.darker(subsurfaceTheme.backgroundColor, 1.2)
+			anchors.bottom: parent.bottom
+			anchors.bottomMargin: inComboBox ? Kirigami.Units.largeSpacing : 1
+			visible: !stf.readOnly
+		}
+	}
 
 	// while we are at it, let's put some common settings here into the shared element
+	font.pointSize: subsurfaceTheme.regularPointSize
+	topPadding: 0
+	bottomPadding: 0
 	color: subsurfaceTheme.textColor
 	onEditingFinished: {
 		focus = false
 		firstTime = true
 	}
 
-	// that's when a user taps on the field to start entering text
-	onPressed: {
-		if (flickable !== undefined) {
+	// once a text input has focus, make sure it is visible
+	// we do this via a timer to give the OS time to show a virtual keyboard
+	onFocusChanged:	{
+		if (focus && flickable !== undefined) {
 			waitForKeyboard.start()
-		} else {
-			manager.appendTextToLog("flickable is undefined")
 		}
 	}
 
@@ -43,15 +63,12 @@ Controls.TextField {
 				return
 			}
 			// make sure there's enough space for the input field above the keyboard and action button (and that it's not too far up, either)
-			if (stf.y + stf.height > flickable.contentY + flickable.height - 3 * Kirigami.Units.gridUnit || y < flickable.contentY)
-				ensureVisible(Math.max(0, 3 * Kirigami.Units.gridUnit + stf.y + stf.height - flickable.height))
+			var positionInFlickable = stf.mapToItem(flickable.contentItem, 0, 0)
+			var stfY = positionInFlickable.y
+			if (manager.verboseEnabebled)
+				manager.appendTextToLog("position check: lower edge of view is " + (0 + flickable.contentY + flickable.height) + " and text field is at " + stfY)
+			if (stfY + stf.height > flickable.contentY + flickable.height - 3 * Kirigami.Units.gridUnit || stfY < flickable.contentY)
+				flickable.contentY = Math.max(0, 3 * Kirigami.Units.gridUnit + stfY + stf.height - flickable.height)
 		}
-	}
-
-	// scroll the flickable to the desired position if the keyboard has shown up
-	// this didn't work when setting it from within the Timer, but calling this function works.
-	// go figure.
-	function ensureVisible(yDest) {
-		flickable.contentY = yDest
 	}
 }

@@ -4,11 +4,15 @@
 
 #include "core/dive.h"
 #include "core/pictureobj.h"
+#include "core/taxonomy.h"
 #include <QVector>
 #include <QAction>
 #include <vector>
 
 struct DiveAndLocation;
+struct FilterData;
+struct filter_preset_table;
+struct device_table;
 
 // We put everything in a namespace, so that we can shorten names without polluting the global namespace
 namespace Command {
@@ -31,7 +35,9 @@ QString changesMade();			// return a string with the texts from all commands on 
 // insertion position.
 void addDive(dive *d, bool autogroup, bool newNumber);
 void importDives(struct dive_table *dives, struct trip_table *trips,
-		 struct dive_site_table *sites, int flags, const QString &source); // The tables are consumed!
+		 struct dive_site_table *sites, struct device_table *devices,
+		 struct filter_preset_table *filter_presets,
+		 int flags, const QString &source); // The tables are consumed!
 void deleteDive(const QVector<struct dive*> &divesToDelete);
 void shiftTime(const std::vector<dive *> &changedDives, int amount);
 void renumberDives(const QVector<QPair<dive *, int>> &divesToRenumber);
@@ -132,6 +138,17 @@ struct PictureListForAddition {
 void setPictureOffset(dive *d, const QString &filename, offset_t offset);
 void removePictures(const std::vector<PictureListForDeletion> &pictures);
 void addPictures(const std::vector<PictureListForAddition> &pictures);
+
+// 8) Device commands
+
+void removeDevice(int idx);
+void editDeviceNickname(int idx, const QString &nickname);
+
+// 9) Filter commands
+
+void createFilterPreset(const QString &name, const FilterData &data);
+void removeFilterPreset(int index);
+void editFilterPreset(int index, const FilterData &data);
 
 } // namespace Command
 

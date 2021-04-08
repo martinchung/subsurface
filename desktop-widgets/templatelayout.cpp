@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <QDir>
+#include <QFile>
 #include <QFileDevice>
 #include <QRegularExpression>
-#include <list>
+#include <QTextStream>
 
 #include "templatelayout.h"
+#include "mainwindow.h"
+#include "printoptions.h"
 #include "core/divelist.h"
 #include "core/selection.h"
+#include "core/qthelper.h"
+#include "core/string-format.h"
 
 QList<QString> grantlee_templates, grantlee_statistics_templates;
-
-int getTotalWork(print_options *printOptions)
-{
-	if (printOptions->print_selected) {
-		// return the correct number depending on all/selected dives
-		// but don't return 0 as we might divide by this number
-		return amount_selected && !in_planner() ? amount_selected : 1;
-	}
-	return dive_table.nr;
-}
 
 void find_all_templates()
 {
@@ -94,136 +90,63 @@ void copy_bundled_templates(QString src, QString dst, QStringList *templateBacku
 	}
 }
 
-TemplateLayout::TemplateLayout(print_options *printOptions, template_options *templateOptions)
+TemplateLayout::TemplateLayout(const print_options &printOptions, const template_options &templateOptions) :
+	numDives(0), printOptions(printOptions), templateOptions(templateOptions)
 {
-	this->printOptions = printOptions;
-	this->templateOptions = templateOptions;
 }
 
-/* a HTML pre-processor stage. acts like a compatibility layer
- * between some Grantlee variables and DiveObjectHelperGrantlee Q_PROPERTIES:
- *	dive.weights -> dive.weightList
- * 	dive.weight# -> dive.weights.#
- *	dive.cylinders -> dive.cylinderList
- * 	dive.cylinder# -> dive.cylinders.#
- * The Grantlee parser works with a single or no space next to the variable
- * markers - e.g. '{{ var }}'. We're graceful and support an arbitrary number of
- * whitespace. */
-static QRegularExpression weightsRegExp(R"({{\*?([A-Za-z]+[A-Za-z0-9]*).weights\s*}})");
-static QRegularExpression weightRegExp(R"({{\*?([A-Za-z]+[A-Za-z0-9]*).weight(\d+)\s*}})");
-static QRegularExpression cylindersRegExp(R"({{\*?([A-Za-z]+[A-Za-z0-9]*).cylinders\s*}})");
-static QRegularExpression cylinderRegExp(R"({{\s*([A-Za-z]+[A-Za-z0-9]*).cylinder(\d+)\s*}})");
-static QString preprocessTemplate(const QString &in)
+QString TemplateLayout::generate(bool in_planner)
 {
-	QString out = in;
-
-	out.replace(weightsRegExp, QStringLiteral(R"({{\1.weightList}})"));
-	out.replace(weightRegExp, QStringLiteral(R"({{\1.weights.\2}})"));
-	out.replace(cylindersRegExp, QStringLiteral(R"({{\1.cylinderList}})"));
-	out.replace(cylindersRegExp, QStringLiteral(R"({{\1.cylinders.\2}})"));
-
-	return out;
-}
-
-QString TemplateLayout::generate()
-{
-	int progress = 0;
-	int totalWork = getTotalWork(printOptions);
-
 	QString htmlContent;
-	Grantlee::Engine engine(this);
-	Grantlee::registerMetaType<template_options>();
-	Grantlee::registerMetaType<print_options>();
-	Grantlee::registerMetaType<CylinderObjectHelper>(); // TODO: Remove when grantlee supports Q_GADGET
-	Grantlee::registerMetaType<DiveObjectHelperGrantlee>(); // TODO: Remove when grantlee supports Q_GADGET
 
-	QVariantList diveList;
+	State state;
 
-	struct dive *dive;
-	if (in_planner()) {
-		diveList.append(QVariant::fromValue(DiveObjectHelperGrantlee(&displayed_dive)));
-		emit progressUpdated(100.0);
+	if (in_planner) {
+		state.dives.append(&displayed_dive);
 	} else {
 		int i;
+		struct dive *dive;
 		for_each_dive (i, dive) {
 			//TODO check for exporting selected dives only
-			if (!dive->selected && printOptions->print_selected)
+			if (!dive->selected && printOptions.print_selected)
 				continue;
-			diveList.append(QVariant::fromValue(DiveObjectHelperGrantlee(dive)));
-			progress++;
-			emit progressUpdated(lrint(progress * 100.0 / totalWork));
+			state.dives.append(dive);
 		}
 	}
-	Grantlee::Context c;
-	c.insert("dives", diveList);
-	c.insert("template_options", QVariant::fromValue(*templateOptions));
-	c.insert("print_options", QVariant::fromValue(*printOptions));
 
-	/* don't use the Grantlee loader API */
-	QString templateContents = readTemplate(printOptions->p_template);
-	QString preprocessed = preprocessTemplate(templateContents);
+	QString templateContents = readTemplate(printOptions.p_template);
+	numDives = state.dives.size();
 
-	/* create the template from QString; is this thing allocating memory? */
-	Grantlee::Template t = engine.newTemplate(preprocessed, printOptions->p_template);
-	if (!t || t->error()) {
-		qDebug() << "Can't load template";
-		return htmlContent;
-	}
-
-	htmlContent = t->render(&c);
-
-	if (t->error()) {
-		qDebug() << "Can't render template";
-	}
+	QList<token> tokens = lexer(templateContents);
+	QString buffer;
+	QTextStream out(&buffer);
+	parser(tokens, 0, tokens.size(), out, state);
+	htmlContent = out.readAll();
 	return htmlContent;
 }
 
 QString TemplateLayout::generateStatistics()
 {
 	QString htmlContent;
-	Grantlee::Engine engine(this);
 
-	QSharedPointer<Grantlee::FileSystemTemplateLoader> m_templateLoader =
-		QSharedPointer<Grantlee::FileSystemTemplateLoader>(new Grantlee::FileSystemTemplateLoader());
-	m_templateLoader->setTemplateDirs(QStringList() << getPrintingTemplatePathUser() + QDir::separator() + QString("statistics"));
-	engine.addTemplateLoader(m_templateLoader);
-
-	Grantlee::registerMetaType<YearInfo>();
-	Grantlee::registerMetaType<template_options>();
-	Grantlee::registerMetaType<print_options>();
-	Grantlee::registerMetaType<CylinderObjectHelper>(); // TODO: Remove when grantlee supports Q_GADGET
-	Grantlee::registerMetaType<DiveObjectHelperGrantlee>(); // TODO: Remove when grantlee supports Q_GADGET
-
-	QVariantList years;
+	State state;
 
 	int i = 0;
 	stats_summary_auto_free stats;
 	calculate_stats_summary(&stats, false);
 	while (stats.stats_yearly != NULL && stats.stats_yearly[i].period) {
-		YearInfo year{ &stats.stats_yearly[i] };
-		years.append(QVariant::fromValue(year));
+		state.years.append(&stats.stats_yearly[i]);
 		i++;
 	}
 
-	Grantlee::Context c;
-	c.insert("years", years);
-	c.insert("template_options", QVariant::fromValue(*templateOptions));
-	c.insert("print_options", QVariant::fromValue(*printOptions));
+	QString templateFile = QString("statistics") + QDir::separator() + printOptions.p_template;
+	QString templateContents = readTemplate(templateFile);
 
-	Grantlee::Template t = engine.loadByName(printOptions->p_template);
-	if (!t || t->error()) {
-		qDebug() << "Can't load template";
-		return htmlContent;
-	}
-
-	htmlContent = t->render(&c);
-
-	if (t->error()) {
-		qDebug() << "Can't render template";
-		return htmlContent;
-	}
-
-	emit progressUpdated(100);
+	QList<token> tokens = lexer(templateContents);
+	QString buffer;
+	QTextStream out(&buffer);
+	parser(tokens, 0, tokens.size(), out, state);
+	htmlContent = out.readAll();
 	return htmlContent;
 }
 
@@ -245,4 +168,422 @@ void TemplateLayout::writeTemplate(QString template_name, QString grantlee_templ
 		qfile.resize(qfile.pos());
 		qfile.close();
 	}
+}
+
+struct token stringToken(QString s)
+{
+	struct token newtoken;
+	newtoken.type = LITERAL;
+	newtoken.contents = s;
+	return newtoken;
+}
+
+static QRegularExpression keywordFor(R"(\bfor\b)");
+static QRegularExpression keywordEndfor(R"(\bendfor\b)");
+static QRegularExpression keywordBlock(R"(\bblock\b)");
+static QRegularExpression keywordEndblock(R"(\bendblock\b)");
+static QRegularExpression keywordIf(R"(\bif\b)");
+static QRegularExpression keywordEndif(R"(\bendif\b)");
+
+struct token operatorToken(QString s)
+{
+	struct token newtoken;
+
+	QRegularExpressionMatch match = keywordFor.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = FORSTART;
+		newtoken.contents = s.mid(match.capturedEnd());
+		return newtoken;
+	}
+	match = keywordEndfor.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = FORSTOP;
+		newtoken.contents = "";
+		return newtoken;
+	}
+	match = keywordBlock.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = BLOCKSTART;
+		newtoken.contents = s.mid(match.capturedEnd());
+		return newtoken;
+	}
+	match = keywordEndblock.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = BLOCKSTOP;
+		newtoken.contents = "";
+		return newtoken;
+	}
+	match = keywordIf.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = IFSTART;
+		newtoken.contents = s.mid(match.capturedEnd());
+		return newtoken;
+	}
+	match = keywordEndif.match(s);
+	if (match.hasMatch()) {
+		newtoken.type = IFSTOP;
+		newtoken.contents = "";
+		return newtoken;
+	}
+
+	newtoken.type = PARSERERROR;
+	newtoken.contents = "";
+	return newtoken;
+}
+
+static QRegularExpression op(R"(\{%([\w\s\.\|\:]+)%\})");	// Look for {% stuff %}
+
+QList<token> TemplateLayout::lexer(QString input)
+{
+	QList<token> tokenList;
+
+	int last = 0;
+	QRegularExpressionMatch match = op.match(input);
+	while (match.hasMatch()) {
+		tokenList << stringToken(input.mid(last, match.capturedStart() - last));
+		tokenList << operatorToken(match.captured(1));
+		last = match.capturedEnd();
+		match = op.match(input, last);
+	}
+	tokenList << stringToken(input.mid(last));
+	return tokenList;
+}
+
+static QRegularExpression var(R"(\{\{\s*(\w+)\.(\w+)\s*(\|\s*(\w+))?\s*\}\})");	// Look for {{ stuff.stuff|stuff }}
+
+QString TemplateLayout::translate(QString s, State &state)
+{
+	QString out;
+	int last = 0;
+	QRegularExpressionMatch match = var.match(s);
+	while (match.hasMatch()) {
+		QString obname = match.captured(1);
+		QString memname = match.captured(2);
+		out +=  s.mid(last, match.capturedStart() - last);
+		QString listname = state.types.value(obname, obname);
+		QVariant value = getValue(listname, memname, state);
+		out += value.toString();
+		last = match.capturedEnd();
+		match = var.match(s, last);
+	}
+	out += s.mid(last);
+	return out;
+}
+
+static QRegularExpression forloop(R"(\s*(\w+)\s+in\s+(\w+))");	// Look for "VAR in LISTNAME"
+static QRegularExpression ifstatement(R"(forloop\.counter\|\s*divisibleby\:\s*(\d+))");	// Look for forloop.counter|divisibleby: NUMBER
+
+template<typename V, typename T>
+void TemplateLayout::parser_for(QList<token> tokenList, int from, int to, QTextStream &out, State &state,
+				const V &data, const T *&act, bool emitProgress)
+{
+	const T *old = act;
+	int i = 1; // Loop iterators start at one
+	int olditerator = state.forloopiterator;
+	for (const T &item: data) {
+		act = &item;
+		state.forloopiterator = i++;
+		parser(tokenList, from, to, out, state);
+		if (emitProgress)
+			emit progressUpdated(state.forloopiterator * 100 / data.size());
+	}
+	if (data.empty())
+		emit progressUpdated(100);
+	act = old;
+	state.forloopiterator = olditerator;
+}
+
+// Find end of for or if block. Keeps track of nested blocks.
+// Pos should point one past the starting tag.
+// Returns -1 if no matching end tag found.
+static int findEnd(const QList<token> &tokenList, int from, int to, token_t start, token_t end)
+{
+	int depth = 1;
+	for (int pos = from; pos < to; ++pos) {
+		if (tokenList[pos].type == start) {
+			++depth;
+		} else if (tokenList[pos].type == end) {
+			if (--depth <= 0)
+				return pos;
+		}
+	}
+	return -1;
+}
+
+static std::vector<const cylinder_t *> cylinderList(const dive *d)
+{
+	std::vector<const cylinder_t *> res;
+	res.reserve(d->cylinders.nr);
+	for (int i = 0; i < d->cylinders.nr; ++i)
+		res.push_back(&d->cylinders.cylinders[i]);
+	return res;
+}
+
+void TemplateLayout::parser(QList<token> tokenList, int from, int to, QTextStream &out, State &state)
+{
+	for (int pos = from; pos < to; ++pos) {
+		switch (tokenList[pos].type) {
+		case LITERAL:
+			out << translate(tokenList[pos].contents, state);
+			break;
+		case BLOCKSTART:
+		case BLOCKSTOP:
+			break;
+		case FORSTART:
+		{
+			QString argument = tokenList[pos].contents;
+			++pos;
+			QRegularExpressionMatch match = forloop.match(argument);
+			if (match.hasMatch()) {
+				QString itemname = match.captured(1);
+				QString listname = match.captured(2);
+				state.types[itemname] = listname;
+				QString buffer;
+				QTextStream capture(&buffer);
+				int loop_end = findEnd(tokenList, pos, to, FORSTART, FORSTOP);
+				if (loop_end < 0) {
+					out << "UNMATCHED FOR: '" << argument << "'";
+					break;
+				}
+				if (listname == "years") {
+					parser_for(tokenList, pos, loop_end, capture, state, state.years, state.currentYear, true);
+				} else if (listname == "dives") {
+					parser_for(tokenList, pos, loop_end, capture, state, state.dives, state.currentDive, true);
+				} else if (listname == "cylinders") {
+					if (state.currentDive)
+						parser_for(tokenList, pos, loop_end, capture, state, formatCylinders(*state.currentDive), state.currentCylinder, false);
+					else
+						qWarning("cylinders loop outside of dive");
+				} else if (listname == "cylinderObjects") {
+					if (state.currentDive)
+						parser_for(tokenList, pos, loop_end, capture, state, cylinderList(*state.currentDive), state.currentCylinderObject, false);
+					else
+						qWarning("cylinderObjects loop outside of dive");
+				} else {
+					qWarning("unknown loop: %s", qPrintable(listname));
+				}
+				state.types.remove(itemname);
+				out << capture.readAll();
+				pos = loop_end;
+			} else {
+				out << "PARSING ERROR: '" << argument << "'";
+			}
+		}
+			break;
+		case IFSTART:
+		{
+			QString argument = tokenList[pos].contents;
+			++pos;
+			QRegularExpressionMatch match = ifstatement.match(argument);
+			if (match.hasMatch()) {
+				int if_end = findEnd(tokenList, pos, to, IFSTART, IFSTOP);
+				if (if_end < 0) {
+					out << "UNMATCHED IF: '" << argument << "'";
+					break;
+				}
+				int divisor = match.captured(1).toInt();
+				int counter = std::max(0, state.forloopiterator);
+				if (!(counter % divisor)) {
+					QString buffer;
+					QTextStream capture(&buffer);
+					parser(tokenList, pos, if_end, capture, state);
+					out << capture.readAll();
+				}
+				pos = if_end;
+			} else {
+				out << "PARSING ERROR: '" << argument << "'";
+			}
+		}
+			break;
+		case FORSTOP:
+		case IFSTOP:
+			out << "UNEXPECTED END: " << tokenList[pos].contents;
+			return;
+		case PARSERERROR:
+			out << "PARSING ERROR";
+		}
+	}
+}
+
+QVariant TemplateLayout::getValue(QString list, QString property, const State &state)
+{
+	if (list == "template_options") {
+		if (property == "font") {
+			switch (templateOptions.font_index) {
+			case 0:
+				return "Arial, Helvetica, sans-serif";
+			case 1:
+				return "Impact, Charcoal, sans-serif";
+			case 2:
+				return "Georgia, serif";
+			case 3:
+				return "Courier, monospace";
+			case 4:
+				return "Verdana, Geneva, sans-serif";
+			}
+		} else if (property == "borderwidth") {
+			return templateOptions.border_width;
+		} else if (property == "font_size") {
+			return templateOptions.font_size / 9.0;
+		} else if (property == "line_spacing") {
+			return templateOptions.line_spacing;
+		} else if (property == "color1") {
+			return templateOptions.color_palette.color1.name();
+		} else if (property == "color2") {
+			return templateOptions.color_palette.color2.name();
+		} else if (property == "color3") {
+			return templateOptions.color_palette.color3.name();
+		} else if (property == "color4") {
+			return templateOptions.color_palette.color4.name();
+		} else if (property == "color5") {
+			return templateOptions.color_palette.color5.name();
+		} else if (property == "color6") {
+			return templateOptions.color_palette.color6.name();
+		}
+	} else if (list ==  "print_options") {
+		if (property == "grayscale") {
+			if (printOptions.color_selected) {
+				return "";
+			} else {
+				return "-webkit-filter: grayscale(100%)";
+			}
+		}
+	} else if (list =="years") {
+		if (!state.currentYear)
+			return QVariant();
+		const stats_t *object = *state.currentYear;
+		if (property == "year") {
+			return object->period;
+		} else if (property == "dives") {
+			return object->selection_size;
+		} else if (property == "min_temp") {
+			return object->min_temp.mkelvin == 0 ? "0" : get_temperature_string(object->min_temp, true);
+		} else if (property == "max_temp") {
+			return object->max_temp.mkelvin == 0 ? "0" : get_temperature_string(object->max_temp, true);
+		} else if (property == "total_time") {
+			return get_dive_duration_string(object->total_time.seconds, gettextFromC::tr("h"),
+							gettextFromC::tr("min"), gettextFromC::tr("sec"), " ");
+		} else if (property == "avg_time") {
+			return get_minutes(object->total_time.seconds / object->selection_size);
+		} else if (property == "shortest_time") {
+			return get_minutes(object->shortest_time.seconds);
+		} else if (property == "longest_time") {
+			return get_minutes(object->longest_time.seconds);
+		} else if (property == "avg_depth") {
+			return get_depth_string(object->avg_depth);
+		} else if (property == "min_depth") {
+			return get_depth_string(object->min_depth);
+		} else if (property == "max_depth") {
+			return get_depth_string(object->max_depth);
+		} else if (property == "avg_sac") {
+			return get_volume_string(object->avg_sac);
+		} else if (property == "min_sac") {
+			return get_volume_string(object->min_sac);
+		} else if (property == "max_sac") {
+			return get_volume_string(object->max_sac);
+		}
+	} else if (list == "cylinders") {
+		if (state.currentCylinder && property == "description") {
+			return *state.currentCylinder;
+		}
+	} else if (list == "cylinderObjects") {
+		if (!state.currentCylinderObject)
+			return QVariant();
+		const cylinder_t *cylinder = *state.currentCylinderObject;
+		if (property == "description") {
+			return cylinder->type.description;
+		} else if (property == "size") {
+			return get_volume_string(cylinder->type.size, true);
+		} else if (property == "workingPressure") {
+			return get_pressure_string(cylinder->type.workingpressure, true);
+		} else if (property == "startPressure") {
+			return get_pressure_string(cylinder->start, true);
+		} else if (property == "endPressure") {
+			return get_pressure_string(cylinder->end, true);
+		} else if (property == "gasMix") {
+			return get_gas_string(cylinder->gasmix);
+		}
+	} else if (list == "dives") {
+		if (!state.currentDive)
+			return QVariant();
+		const dive *d = *state.currentDive;
+		if (property == "number") {
+			return d->number;
+		} else if (property == "id") {
+			return d->id;
+		} else if (property == "rating") {
+			return d->rating;
+		} else if (property == "visibility") {
+			return d->visibility;
+		} else if (property == "wavesize") {
+			return d->wavesize;
+		} else if (property == "current") {
+			return d->current;
+		} else if (property == "surge") {
+			return d->surge;
+		} else if (property == "chill") {
+			return d->chill;
+		} else if (property == "date") {
+			return formatDiveDate(d);
+		} else if (property == "time") {
+			return formatDiveTime(d);
+		} else if (property == "timestamp") {
+			return QVariant::fromValue(d->when);
+		} else if (property == "location") {
+			return get_dive_location(d);
+		} else if (property == "gps") {
+			return formatDiveGPS(d);
+		} else if (property == "gps_decimal") {
+			return format_gps_decimal(d);
+		} else if (property == "duration") {
+			return formatDiveDuration(d);
+		} else if (property == "noDive") {
+			return d->duration.seconds == 0 && d->dc.duration.seconds == 0;
+		} else if (property == "depth") {
+			return get_depth_string(d->dc.maxdepth.mm, true, true);
+		} else if (property == "divemaster") {
+			return d->divemaster;
+		} else if (property == "buddy") {
+			return d->buddy;
+		} else if (property == "airTemp") {
+			return get_temperature_string(d->airtemp, true);
+		} else if (property == "waterTemp") {
+			return get_temperature_string(d->watertemp, true);
+		} else if (property == "notes") {
+			return formatNotes(d);
+		} else if (property == "tags") {
+			return get_taglist_string(d->tag_list);
+		} else if (property == "gas") {
+			return formatGas(d);
+		} else if (property == "sac") {
+			return formatSac(d);
+		} else if (property == "weightList") {
+			return formatWeightList(d);
+		} else if (property == "weights") {
+			return formatWeights(d);
+		} else if (property == "singleWeight") {
+			return d->weightsystems.nr <= 1;
+		} else if (property == "suit") {
+			return d->suit;
+		} else if (property == "cylinderList") {
+			return formatFullCylinderList();
+		} else if (property == "cylinders") {
+			return formatCylinders(d);
+		} else if (property == "maxcns") {
+			return d->maxcns;
+		} else if (property == "otu") {
+			return d->otu;
+		} else if (property == "sumWeight") {
+			return formatSumWeight(d);
+		} else if (property == "getCylinder") {
+			return formatGetCylinder(d);
+		} else if (property == "startPressure") {
+			return formatStartPressure(d);
+		} else if (property == "endPressure") {
+			return formatEndPressure(d);
+		} else if (property == "firstGas") {
+			return formatFirstGas(d);
+		}
+	}
+	return QVariant();
 }

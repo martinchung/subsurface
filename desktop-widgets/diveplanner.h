@@ -2,48 +2,20 @@
 #ifndef DIVEPLANNER_H
 #define DIVEPLANNER_H
 
-#include <QGraphicsPathItem>
 #include <QAbstractTableModel>
 #include <QAbstractButton>
 #include <QDateTime>
-#include <QSignalMapper>
-#include <QElapsedTimer>
-
 
 class QListView;
 class QModelIndex;
 class DivePlannerPointsModel;
-
-class DiveHandler : public QObject, public QGraphicsEllipseItem {
-	Q_OBJECT
-public:
-	DiveHandler();
-
-protected:
-	void contextMenuEvent(QGraphicsSceneContextMenuEvent *event);
-	void mouseMoveEvent(QGraphicsSceneMouseEvent *event);
-	void mousePressEvent(QGraphicsSceneMouseEvent *event);
-	void mouseReleaseEvent(QGraphicsSceneMouseEvent *event);
-signals:
-	void moved();
-	void clicked();
-	void released();
-private:
-	int parentIndex();
-public
-slots:
-	void selfRemove();
-	void changeGas();
-private:
-	QElapsedTimer t;
-};
 
 #include "ui_diveplanner.h"
 
 class DivePlannerWidget : public QWidget {
 	Q_OBJECT
 public:
-	explicit DivePlannerWidget(QWidget *parent = 0, Qt::WindowFlags f = 0);
+	explicit DivePlannerWidget(QWidget *parent = 0);
 	void setReplanButton(bool replan);
 public
 slots:
@@ -53,7 +25,6 @@ slots:
 	void heightChanged(const int height);
 	void waterTypeChanged(const int index);
 	void customSalinityChanged(double density);
-	void printDecoPlan();
 	void setSurfacePressure(int surface_pressure);
 	void setSalinity(int salinity);
 private:
@@ -67,12 +38,11 @@ private:
 class PlannerSettingsWidget : public QWidget {
 	Q_OBJECT
 public:
-	explicit PlannerSettingsWidget(QWidget *parent = 0, Qt::WindowFlags f = 0);
+	explicit PlannerSettingsWidget(QWidget *parent = 0);
 	~PlannerSettingsWidget();
 public
 slots:
 	void settingsChanged();
-	void printDecoPlan();
 	void setBackgasBreaks(bool dobreaks);
 	void disableDecoElements(int mode);
 	void disableBackgasBreaks(bool enabled);
@@ -92,10 +62,28 @@ public:
 	explicit PlannerDetails(QWidget *parent = 0);
 	QPushButton *printPlan() const { return ui.printPlan; }
 	QTextEdit *divePlanOutput() const { return ui.divePlanOutput; }
-	QLabel *divePlannerOutputLabel() const { return ui.divePlanOutputLabel; }
+public
+slots:
+	void setPlanNotes(QString plan);
 
 private:
 	Ui::plannerDetails ui;
+};
+
+// The planner widgets make up three quadrants
+class PlannerWidgets : public QObject {
+	Q_OBJECT
+public:
+	PlannerWidgets();
+	void planDive();
+	void replanDive();
+public
+slots:
+	void printDecoPlan();
+public:
+	DivePlannerWidget plannerWidget;
+	PlannerSettingsWidget plannerSettingsWidget;
+	PlannerDetails plannerDetails;
 };
 
 #endif // DIVEPLANNER_H

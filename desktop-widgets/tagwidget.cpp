@@ -3,6 +3,7 @@
 #include "mainwindow.h"
 #include "tab-widgets/maintab.h"
 #include <QCompleter>
+#include <QMimeData>
 
 TagWidget::TagWidget(QWidget *parent) : GroupedLineEdit(parent), m_completer(NULL), lastFinishedTag(false)
 {
@@ -38,6 +39,12 @@ void TagWidget::setCompleter(QCompleter *completer)
 	connect(m_completer, SIGNAL(highlighted(QString)), this, SLOT(completionHighlighted(QString)));
 }
 
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+#define SKIP_EMPTY Qt::SkipEmptyParts
+#else
+#define SKIP_EMPTY QString::SkipEmptyParts
+#endif
+
 QPair<int, int> TagWidget::getCursorTagPosition()
 {
 	int i = 0, start = 0, end = 0;
@@ -70,7 +77,7 @@ void TagWidget::highlight()
 {
 	removeAllBlocks();
 	int lastPos = 0;
-	const auto l = text().split(QChar(','), QString::SkipEmptyParts);
+	const auto l = text().split(QChar(','), SKIP_EMPTY);
 	for (const QString &s: l) {
 		QString trimmed = s.trimmed();
 		if (trimmed.isEmpty())
@@ -196,18 +203,50 @@ void TagWidget::wheelEvent(QWheelEvent *event)
 	}
 }
 
-void TagWidget::fixPopupPosition(int delta)
-{
-	if(m_completer->popup()->isVisible()){
-		QRect toGlobal = m_completer->popup()->geometry();
-		m_completer->popup()->setGeometry(toGlobal.x(), toGlobal.y() + delta +10, toGlobal.width(), toGlobal.height());
-	}
-}
-
 // Since we capture enter / return / tab, we never send an editingFinished() signal.
 // Therefore, override the focusOutEvent()
 void TagWidget::focusOutEvent(QFocusEvent *ev)
 {
 	GroupedLineEdit::focusOutEvent(ev);
+	emit editingFinished();
+}
+
+// Implement simple drag and drop: text dropped onto the widget
+// will be added as a new tag at the end. This overrides
+// Qt's implementation which resulted in weird UI behavior,
+// as the user may succeed in scrolling the view port.
+static void handleDragEvent(QDragMoveEvent *e)
+{
+	if (e->mimeData()->hasFormat(QStringLiteral("text/plain")))
+		e->acceptProposedAction();
+}
+
+void TagWidget::dragEnterEvent(QDragEnterEvent *e)
+{
+	handleDragEvent(e);
+}
+
+void TagWidget::dragMoveEvent(QDragMoveEvent *e)
+{
+	handleDragEvent(e);
+}
+
+void TagWidget::dragLeaveEvent(QDragLeaveEvent *)
+{
+}
+
+void TagWidget::dropEvent(QDropEvent *e)
+{
+	e->acceptProposedAction();
+
+	QString newTag = e->mimeData()->text().trimmed();
+	if (newTag.isEmpty())
+		return;
+
+	QString s = text().trimmed();
+	if (!s.isEmpty())
+		s += ", ";
+	s += newTag;
+	setText(s);
 	emit editingFinished();
 }

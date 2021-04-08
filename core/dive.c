@@ -13,14 +13,17 @@
 #include "divelist.h"
 #include "divesite.h"
 #include "errorhelper.h"
+#include "event.h"
+#include "extradata.h"
+#include "interpolate.h"
 #include "qthelper.h"
 #include "membuffer.h"
 #include "picture.h"
+#include "sample.h"
 #include "tag.h"
 #include "trip.h"
 #include "structured_list.h"
 #include "fulltext.h"
-
 
 /* one could argue about the best place to have this variable -
  * it's used in the UI, but it seems to make the most sense to have it
@@ -38,46 +41,7 @@ const char *divemode_text_ui[] = {
 // For writing/reading files.
 const char *divemode_text[] = {"OC", "CCR", "PSCR", "Freedive"};
 
-/*
- * Adding a cylinder pressure sample field is not quite as trivial as it
- * perhaps should be.
- *
- * We try to keep the same sensor index for the same sensor, so that even
- * if the dive computer doesn't give pressure information for every sample,
- * we don't move pressure information around between the different sensor
- * indices.
- *
- * The "prepare_sample()" function will always copy the sensor indices
- * from the previous sample, so the indices are pre-populated (but the
- * pressures obviously are not)
- */
-void add_sample_pressure(struct sample *sample, int sensor, int mbar)
-{
-	int idx;
-
-	if (!mbar)
-		return;
-
-	/* Do we already have a slot for this sensor */
-	for (idx = 0; idx < MAX_SENSORS; idx++) {
-		if (sensor != sample->sensor[idx])
-			continue;
-		sample->pressure[idx].mbar = mbar;
-		return;
-	}
-
-	/* Pick the first unused index if we couldn't reuse one */
-	for (idx = 0; idx < MAX_SENSORS; idx++) {
-		if (sample->pressure[idx].mbar)
-			continue;
-		sample->sensor[idx] = sensor;
-		sample->pressure[idx].mbar = mbar;
-		return;
-	}
-
-	/* We do not have enough slots for the pressure samples. */
-	/* Should we warn the user about dropping pressure data? */
-}
+static int calculate_depth_to_mbar(int depth, pressure_t surface_pressure, int salinity);
 
 /*
  * The legacy format for sample pressures has a single pressure
@@ -121,58 +85,6 @@ int legacy_format_o2pressures(const struct dive *dive, const struct divecomputer
 	return o2sensor < 0 ? 256 : o2sensor;
 }
 
-int event_is_gaschange(const struct event *ev)
-{
-	return ev->type == SAMPLE_EVENT_GASCHANGE ||
-		ev->type == SAMPLE_EVENT_GASCHANGE2;
-}
-
-bool event_is_divemodechange(const struct event *ev)
-{
-	return same_string(ev->name, "modechange");
-}
-
-struct event *create_event(unsigned int time, int type, int flags, int value, const char *name)
-{
-	int gas_index = -1;
-	struct event *ev;
-	unsigned int size, len = strlen(name);
-
-	size = sizeof(*ev) + len + 1;
-	ev = malloc(size);
-	if (!ev)
-		return NULL;
-	memset(ev, 0, size);
-	memcpy(ev->name, name, len);
-	ev->time.seconds = time;
-	ev->type = type;
-	ev->flags = flags;
-	ev->value = value;
-
-	/*
-	 * Expand the events into a sane format. Currently
-	 * just gas switches
-	 */
-	switch (type) {
-	case SAMPLE_EVENT_GASCHANGE2:
-		/* High 16 bits are He percentage */
-		ev->gas.mix.he.permille = (value >> 16) * 10;
-
-		/* Extension to the GASCHANGE2 format: cylinder index in 'flags' */
-		/* TODO: verify that gas_index < num_cylinders. */
-		if (flags > 0)
-			gas_index = flags-1;
-	/* Fallthrough */
-	case SAMPLE_EVENT_GASCHANGE:
-		/* Low 16 bits are O2 percentage */
-		ev->gas.mix.o2.permille = (value & 0xffff) * 10;
-		ev->gas.index = gas_index;
-		break;
-	}
-
-	return ev;
-}
-
 /* warning: does not test idx for validity */
 struct event *create_gas_switch_event(struct dive *dive, struct divecomputer *dc, int seconds, int idx)
 {
@@ -193,37 +105,6 @@ struct event *create_gas_switch_event(struct dive *dive, struct divecomputer *dc
 	return ev;
 }
 
-struct event *clone_event_rename(const struct event *ev, const char *name)
-{
-	return create_event(ev->time.seconds, ev->type, ev->flags, ev->value, name);
-}
-
-void add_event_to_dc(struct divecomputer *dc, struct event *ev)
-{
-	struct event **p;
-
-	p = &dc->events;
-
-	/* insert in the sorted list of events */
-	while (*p && (*p)->time.seconds <= ev->time.seconds)
-		p = &(*p)->next;
-	ev->next = *p;
-	*p = ev;
-}
-
-struct event *add_event(struct divecomputer *dc, unsigned int time, int type, int flags, int value, const char *name)
-{
-	struct event *ev = create_event(time, type, flags, value, name);
-
-	if (!ev)
-		return NULL;
-
-	add_event_to_dc(dc, ev);
-
-	remember_event(name);
-	return ev;
-}
-
 void add_gas_switch_event(struct dive *dive, struct divecomputer *dc, int seconds, int idx)
 {
 	/* sanity check so we don't crash */
@@ -236,44 +117,6 @@ void add_gas_switch_event(struct dive *dive, struct divecomputer *dc, int second
 	}
 	struct event *ev = create_gas_switch_event(dive, dc, seconds, idx);
 	add_event_to_dc(dc, ev);
-}
-
-/* Substitutes an event in a divecomputer for another. No reordering is performed! */
-void swap_event(struct divecomputer *dc, struct event *from, struct event *to)
-{
-	for (struct event **ep = &dc->events; *ep; ep = &(*ep)->next) {
-		if (*ep == from) {
-			to->next = from->next;
-			*ep = to;
-			from->next = NULL; // For good measure.
-			break;
-		}
-	}
-}
-
-bool same_event(const struct event *a, const struct event *b)
-{
-	if (a->time.seconds != b->time.seconds)
-		return 0;
-	if (a->type != b->type)
-		return 0;
-	if (a->flags != b->flags)
-		return 0;
-	if (a->value != b->value)
-		return 0;
-	return !strcmp(a->name, b->name);
-}
-
-/* Remove given event from dive computer. Does *not* free the event. */
-void remove_event_from_dc(struct divecomputer *dc, struct event *event)
-{
-	for (struct event **ep = &dc->events; *ep; ep = &(*ep)->next) {
-		if (*ep == event) {
-			*ep = event->next;
-			event->next = NULL; // For good measure.
-			break;
-		}
-	}
 }
 
 /* since the name is an array as part of the structure (how silly is that?) we
@@ -298,43 +141,6 @@ void update_event_name(struct dive *d, struct event *event, const char *name)
 	add_event(dc, event->time.seconds, event->type, event->flags, event->value, name);
 	free(remove);
 	invalidate_dive_cache(d);
-}
-
-void add_extra_data(struct divecomputer *dc, const char *key, const char *value)
-{
-	struct extra_data **ed = &dc->extra_data;
-
-	while (*ed)
-		ed = &(*ed)->next;
-	*ed = malloc(sizeof(struct extra_data));
-	if (*ed) {
-		(*ed)->key = strdup(key);
-		(*ed)->value = strdup(value);
-		(*ed)->next = NULL;
-	}
-}
-
-/* Find the divemode at time 'time' (in seconds) into the dive. Sequentially step through the divemode-change events,
- * saving the dive mode for each event. When the events occur AFTER 'time' seconds, the last stored divemode
- * is returned. This function is self-tracking, relying on setting the event pointer 'evp' so that, in each iteration
- * that calls this function, the search does not have to begin at the first event of the dive */
-enum divemode_t get_current_divemode(const struct divecomputer *dc, int time, const struct event **evp, enum divemode_t *divemode)
-{
-	const struct event *ev = *evp;
-	if (dc) {
-		if (*divemode == UNDEF_COMP_TYPE) {
-			*divemode = dc->divemode;
-			ev = get_next_event(dc->events, "modechange");
-		}
-	} else {
-		ev = NULL;
-	}
-	while (ev && ev->time.seconds < time) {
-		*divemode = (enum divemode_t) ev->value;
-		ev = get_next_event(ev->next, "modechange");
-	}
-	*evp = ev;
-	return *divemode;
 }
 
 struct gasmix get_gasmix_from_event(const struct dive *dive, const struct event *ev)
@@ -371,9 +177,6 @@ struct dive *alloc_dive(void)
 	dive->id = dive_getUniqID();
 	return dive;
 }
-
-static void free_dc(struct divecomputer *dc);
-static void free_dc_contents(struct divecomputer *dc);
 
 /* copy an element in a list of dive computer extra data */
 static void copy_extra_data(struct extra_data *sed, struct extra_data *ded)
@@ -412,14 +215,6 @@ static void copy_dc_renumber(struct dive *d, const struct divecomputer *sdc, str
 		ddc = ddc->next;
 	}
 	ddc->next = NULL;
-}
-
-/* The first divecomputer is embedded in the dive structure. Free its data but not
- * the structure itself. For all remainding dcs in the list, free data *and* structures. */
-void free_dive_dcs(struct divecomputer *dc)
-{
-	free_dc_contents(dc);
-	STRUCTURED_LIST_FREE(struct divecomputer, dc->next, free_dc);
 }
 
 static void free_dive_structures(struct dive *d)
@@ -544,40 +339,6 @@ void selective_copy_dive(const struct dive *s, struct dive *d, struct dive_compo
 }
 #undef CONDITIONAL_COPY_STRING
 
-struct event *clone_event(const struct event *src_ev)
-{
-	struct event *ev;
-	if (!src_ev)
-		return NULL;
-
-	size_t size = sizeof(*src_ev) + strlen(src_ev->name) + 1;
-	ev = (struct event*) malloc(size);
-	if (!ev)
-		exit(1);
-	memcpy(ev, src_ev, size);
-	ev->next = NULL;
-
-	return ev;
-}
-
-/* copies all events in this dive computer */
-void copy_events(const struct divecomputer *s, struct divecomputer *d)
-{
-	const struct event *ev;
-	struct event **pev;
-	if (!s || !d)
-		return;
-	ev = s->events;
-	pev = &d->events;
-	while (ev != NULL) {
-		struct event *new_ev = clone_event(ev);
-		*pev = new_ev;
-		pev = &new_ev->next;
-		ev = ev->next;
-	}
-	*pev = NULL;
-}
-
 /* copies all events from all dive computers before a given time
    this is used when editing a dive in the planner to preserve the events
    of the old dive */
@@ -626,81 +387,6 @@ void copy_used_cylinders(const struct dive *s, struct dive *d, bool used_only)
 	}
 }
 
-void copy_samples(const struct divecomputer *s, struct divecomputer *d)
-{
-	/* instead of carefully copying them one by one and calling add_sample
-	 * over and over again, let's just copy the whole blob */
-	if (!s || !d)
-		return;
-	int nr = s->samples;
-	d->samples = nr;
-	d->alloc_samples = nr;
-	// We expect to be able to read the memory in the other end of the pointer
-	// if its a valid pointer, so don't expect malloc() to return NULL for
-	// zero-sized malloc, do it ourselves.
-	d->sample = NULL;
-
-	if(!nr)
-		return;
-
-	d->sample = malloc(nr * sizeof(struct sample));
-	if (d->sample)
-		memcpy(d->sample, s->sample, nr * sizeof(struct sample));
-}
-
-/* make room for num samples; if not enough space is available, the sample
- * array is reallocated and the existing samples are copied. */
-void alloc_samples(struct divecomputer *dc, int num)
-{
-	if (num > dc->alloc_samples) {
-		dc->alloc_samples = (num * 3) / 2 + 10;
-		dc->sample = realloc(dc->sample, dc->alloc_samples * sizeof(struct sample));
-		if (!dc->sample)
-			dc->samples = dc->alloc_samples = 0;
-	}
-}
-
-void free_samples(struct divecomputer *dc)
-{
-	if (dc) {
-		free(dc->sample);
-		dc->sample = 0;
-		dc->samples = 0;
-		dc->alloc_samples = 0;
-	}
-}
-
-struct sample *prepare_sample(struct divecomputer *dc)
-{
-	if (dc) {
-		int nr = dc->samples;
-		struct sample *sample;
-		alloc_samples(dc, nr + 1);
-		if (!dc->sample)
-			return NULL;
-		sample = dc->sample + nr;
-		memset(sample, 0, sizeof(*sample));
-
-		// Copy the sensor numbers - but not the pressure values
-		// from the previous sample if any.
-		if (nr) {
-			for (int idx = 0; idx < MAX_SENSORS; idx++)
-				sample->sensor[idx] = sample[-1].sensor[idx];
-		}
-		// Init some values with -1
-		sample->bearing.degrees = -1;
-		sample->ndl.seconds = -1;
-
-		return sample;
-	}
-	return NULL;
-}
-
-void finish_sample(struct divecomputer *dc)
-{
-	dc->samples++;
-}
-
 /*
  * So when we re-calculate maxdepth and meandepth, we will
  * not override the old numbers if they are close to the
@@ -734,40 +420,6 @@ static void update_temperature(temperature_t *temperature, int new)
 
 		if (abs(old - new) > 1000)
 			temperature->mkelvin = new;
-	}
-}
-
-/*
- * Calculate how long we were actually under water, and the average
- * depth while under water.
- *
- * This ignores any surface time in the middle of the dive.
- */
-void fixup_dc_duration(struct divecomputer *dc)
-{
-	int duration, i;
-	int lasttime, lastdepth, depthtime;
-
-	duration = 0;
-	lasttime = 0;
-	lastdepth = 0;
-	depthtime = 0;
-	for (i = 0; i < dc->samples; i++) {
-		struct sample *sample = dc->sample + i;
-		int time = sample->time.seconds;
-		int depth = sample->depth.mm;
-
-		/* We ignore segments at the surface */
-		if (depth > SURFACE_THRESHOLD || lastdepth > SURFACE_THRESHOLD) {
-			duration += time - lasttime;
-			depthtime += (time - lasttime) * (depth + lastdepth) / 2;
-		}
-		lastdepth = depth;
-		lasttime = time;
-	}
-	if (duration) {
-		dc->duration.seconds = duration;
-		dc->meandepth.mm = (depthtime + duration / 2) / duration;
 	}
 }
 
@@ -1213,47 +865,10 @@ static void fixup_duration(struct dive *dive)
 	dive->duration.seconds = duration.seconds;
 }
 
-/*
- * What do the dive computers say the water temperature is?
- * (not in the samples, but as dc property for dcs that support that)
- */
-unsigned int dc_watertemp(const struct divecomputer *dc)
-{
-	int sum = 0, nr = 0;
-
-	do {
-		if (dc->watertemp.mkelvin) {
-			sum += dc->watertemp.mkelvin;
-			nr++;
-		}
-	} while ((dc = dc->next) != NULL);
-	if (!nr)
-		return 0;
-	return (sum + nr / 2) / nr;
-}
-
 static void fixup_watertemp(struct dive *dive)
 {
 	if (!dive->watertemp.mkelvin)
 		dive->watertemp.mkelvin = dc_watertemp(&dive->dc);
-}
-
-/*
- * What do the dive computers say the air temperature is?
- */
-unsigned int dc_airtemp(const struct divecomputer *dc)
-{
-	int sum = 0, nr = 0;
-
-	do {
-		if (dc->airtemp.mkelvin) {
-			sum += dc->airtemp.mkelvin;
-			nr++;
-		}
-	} while ((dc = dc->next) != NULL);
-	if (!nr)
-		return 0;
-	return (sum + nr / 2) / nr;
 }
 
 static void fixup_airtemp(struct dive *dive)
@@ -1591,10 +1206,6 @@ static void fixup_no_o2sensors(struct divecomputer *dc)
 
 static void fixup_dive_dc(struct dive *dive, struct divecomputer *dc)
 {
-	/* Add device information to table */
-	if (dc->deviceid && (dc->serial || dc->fw_version))
-		create_device_node(dc->model, dc->deviceid, dc->serial, dc->fw_version, "");
-
 	/* Fixup duration and mean depth */
 	fixup_dc_duration(dc);
 
@@ -1670,18 +1281,6 @@ struct dive *fixup_dive(struct dive *dive)
 #define MERGE_MIN(res, a, b, n) res->n = (a->n) ? (b->n) ? MIN(a->n, b->n) : (a->n) : (b->n)
 #define MERGE_TXT(res, a, b, n, sep) res->n = merge_text(a->n, b->n, sep)
 #define MERGE_NONZERO(res, a, b, n) res->n = a->n ? a->n : b->n
-
-struct sample *add_sample(const struct sample *sample, int time, struct divecomputer *dc)
-{
-	struct sample *p = prepare_sample(dc);
-
-	if (p) {
-		*p = *sample;
-		p->time.seconds = time;
-		finish_sample(dc);
-	}
-	return p;
-}
 
 /*
  * This is like add_sample(), but if the distance from the last sample
@@ -1962,20 +1561,15 @@ static void merge_events(struct dive *d, struct divecomputer *res,
 		const int *cylinders_map;
 		int event_offset;
 
-		if (!b) {
-			*p = clone_event(a);
-			event_renumber(*p, cylinders_map1);
-			break;
-		}
-		if (!a) {
-			*p = clone_event(b);
-			(*p)->time.seconds += offset;
-			event_renumber(*p, cylinders_map2);
-			break;
-		}
+		if (!b)
+			goto pick_a;
+
+		if (!a)
+			goto pick_b;
+
 		s = sort_event(a, b, a->time.seconds, b->time.seconds + offset);
 
-		/* Identical events? Just skip one of them (we pick a) */
+		/* Identical events? Just skip one of them (we skip a) */
 		if (!s) {
 			a = a->next;
 			continue;
@@ -1983,11 +1577,13 @@ static void merge_events(struct dive *d, struct divecomputer *res,
 
 		/* Otherwise, pick the one that sorts first */
 		if (s < 0) {
+pick_a:
 			pick = a;
 			a = a->next;
 			event_offset = 0;
 			cylinders_map = cylinders_map1;
 		} else {
+pick_b:
 			pick = b;
 			b = b->next;
 			event_offset = offset;
@@ -2032,51 +1628,6 @@ extern int get_cylinder_idx_by_use(const struct dive *dive, enum cylinderuse cyl
 			return cylinder_index; // return the index of the cylinder with that cylinder use type
 	}
 	return -1; // negative number means cylinder_use_type not found in list of cylinders
-}
-
-/* fill_pressures(): Compute partial gas pressures in bar from gasmix and ambient pressures, possibly for OC or CCR, to be
- * extended to PSCT. This function does the calculations of gas pressures applicable to a single point on the dive profile.
- * The structure "pressures" is used to return calculated gas pressures to the calling software.
- * Call parameters:	po2 = po2 value applicable to the record in calling function
- *			amb_pressure = ambient pressure applicable to the record in calling function
- *			*pressures = structure for communicating o2 sensor values from and gas pressures to the calling function.
- *			*mix = structure containing cylinder gas mixture information.
- *			divemode = the dive mode pertaining to this point in the dive profile.
- * This function called by: calculate_gas_information_new() in profile.c; add_segment() in deco.c.
- */
-void fill_pressures(struct gas_pressures *pressures, const double amb_pressure, struct gasmix mix, double po2, enum divemode_t divemode)
-{
-	if ((divemode != OC) && po2) {	// This is a rebreather dive where pressures->o2 is defined
-		if (po2 >= amb_pressure) {
-			pressures->o2 = amb_pressure;
-			pressures->n2 = pressures->he = 0.0;
-		} else {
-			pressures->o2 = po2;
-			if (get_o2(mix) == 1000) {
-				pressures->he = pressures->n2 = 0;
-			} else {
-				pressures->he = (amb_pressure - pressures->o2) * (double)get_he(mix) / (1000 - get_o2(mix));
-				pressures->n2 = amb_pressure - pressures->o2 - pressures->he;
-			}
-		}
-	} else {
-		if (divemode == PSCR) { /* The steady state approximation should be good enough */
-			pressures->o2 = get_o2(mix) / 1000.0 * amb_pressure - (1.0 - get_o2(mix) / 1000.0) * prefs.o2consumption / (prefs.bottomsac * prefs.pscr_ratio / 1000.0);
-			if (pressures->o2 < 0) // He's dead, Jim.
-				pressures->o2 = 0;
-			if (get_o2(mix) != 1000) {
-				pressures->he = (amb_pressure - pressures->o2) * get_he(mix) / (1000.0 - get_o2(mix));
-				pressures->n2 = (amb_pressure - pressures->o2) * (1000 - get_o2(mix) - get_he(mix)) / (1000.0 - get_o2(mix));
-			} else {
-				pressures->he = pressures->n2 = 0;
-			}
-		} else {
-			// Open circuit dives: no gas pressure values available, they need to be calculated
-			pressures->o2 = get_o2(mix) / 1000.0 * amb_pressure; // These calculations are also used if the CCR calculation above..
-			pressures->he = get_he(mix) / 1000.0 * amb_pressure; // ..returned a po2 of zero (i.e. o2 sensor data not resolvable)
-			pressures->n2 = (1000 - get_o2(mix) - get_he(mix)) / 1000.0 * amb_pressure;
-		}
-	}
 }
 
 /* Force an initial gaschange event to the (old) gas #0 */
@@ -2229,6 +1780,39 @@ static int match_cylinder(const cylinder_t *cyl, const struct dive *dive, const 
 }
 
 /*
+ * Function used to merge manually set start or end pressures. This
+ * is used to merge cylinders when merging dives. We store up to two
+ * values for start _and_ end pressures: one derived from samples and
+ * one entered manually, whereby the latter takes precedence. It may
+ * happen that the user merges two dives where one has a manual,
+ * the other only a sample-derived pressure. In such a case we want to
+ * supplement the non-existing manual value by a sample derived one.
+ * Otherwise, the merged dive would end up with incomplete pressure
+ * information.
+ * The last argument to the function specifies whether the larger
+ * or smaller value of the two dives should be returned. Obviously,
+ * for the starting pressure we want the larger and for the ending
+ * pressure the smaller value.
+ */
+static pressure_t merge_pressures(pressure_t a, pressure_t sample_a, pressure_t b, pressure_t sample_b, bool take_min)
+{
+	if (!a.mbar && !b.mbar)
+		return a;
+	if (!a.mbar)
+		a = sample_a;
+	if (!b.mbar)
+		b = sample_b;
+	if (!a.mbar)
+		a = b;
+	if (!b.mbar)
+		b = a;
+	if (take_min && a.mbar < b.mbar)
+		return a;
+	else
+		return b;
+}
+
+/*
  * We matched things up so that they have the same gasmix and
  * use, but we might want to fill in any missing cylinder details
  * in 'a' if we had it from 'b'.
@@ -2241,15 +1825,14 @@ static void merge_one_cylinder(cylinder_t *a, const cylinder_t *b)
 		a->type.workingpressure.mbar = b->type.workingpressure.mbar;
 	if (empty_string(a->type.description))
 		a->type.description = copy_string(b->type.description);
-	if (!a->start.mbar)
-		a->start.mbar = b->start.mbar;
-	if (!a->end.mbar)
-		a->end.mbar = b->end.mbar;
 
-	if (a->sample_start.mbar && b->sample_start.mbar)
-		a->sample_start.mbar = a->sample_start.mbar > b->sample_start.mbar ?  a->sample_start.mbar : b->sample_start.mbar;
-	if (a->sample_end.mbar && b->sample_end.mbar)
-		a->sample_end.mbar = a->sample_end.mbar < b->sample_end.mbar ?  a->sample_end.mbar : b->sample_end.mbar;
+	/* If either cylinder has manually entered pressures, try to merge them.
+	 * Use pressures from divecomputer samples if only one cylinder has such a value.
+	 * Yes, this is an actual use case we encountered.
+	 * Note that we don't merge the sample-derived pressure values, as this is
+	 * perfomed after merging in fixup_dive() */
+	a->start = merge_pressures(a->start, a->sample_start, b->start, b->sample_start, false);
+	a->end = merge_pressures(a->end, a->sample_end, b->end, b->sample_end, true);
 
 	/* Really? */
 	a->gas_used.mliter += b->gas_used.mliter;
@@ -2642,35 +2225,6 @@ static int similar(unsigned long a, unsigned long b, unsigned long expected)
 }
 
 /*
- * Match two dive computer entries against each other, and
- * tell if it's the same dive. Return 0 if "don't know",
- * positive for "same dive" and negative for "definitely
- * not the same dive"
- */
-int match_one_dc(const struct divecomputer *a, const struct divecomputer *b)
-{
-	/* Not same model? Don't know if matching.. */
-	if (!a->model || !b->model)
-		return 0;
-	if (strcasecmp(a->model, b->model))
-		return 0;
-
-	/* Different device ID's? Don't know */
-	if (a->deviceid != b->deviceid)
-		return 0;
-
-	/* Do we have dive IDs? */
-	if (!a->diveid || !b->diveid)
-		return 0;
-
-	/*
-	 * If they have different dive ID's on the same
-	 * dive computer, that's a definite "same or not"
-	 */
-	return a->diveid == b->diveid && a->when == b->when ? 1 : -1;
-}
-
-/*
  * Match every dive computer against each other to see if
  * we have a matching dive.
  *
@@ -2782,37 +2336,6 @@ struct dive *try_to_merge(struct dive *a, struct dive *b, bool prefer_downloaded
 	res = merge_dives(a, b, 0, prefer_downloaded, NULL, &site);
 	res->dive_site = site; /* Caller has to call add_dive_to_dive_site()! */
 	return res;
-}
-
-void free_events(struct event *ev)
-{
-	while (ev) {
-		struct event *next = ev->next;
-		free(ev);
-		ev = next;
-	}
-}
-
-static void free_extra_data(struct extra_data *ed)
-{
-	free((void *)ed->key);
-	free((void *)ed->value);
-}
-
-static void free_dc_contents(struct divecomputer *dc)
-{
-	free(dc->sample);
-	free((void *)dc->model);
-	free((void *)dc->serial);
-	free((void *)dc->fw_version);
-	free_events(dc->events);
-	STRUCTURED_LIST_FREE(struct extra_data, dc->extra_data, free_extra_data);
-}
-
-static void free_dc(struct divecomputer *dc)
-{
-	free_dc_contents(dc);
-	free(dc);
 }
 
 static int same_sample(struct sample *a, struct sample *b)
@@ -2997,11 +2520,6 @@ static void join_dive_computers(struct dive *d, struct divecomputer *res,
 	copy_dc_renumber(d, b, tmp->next, cylinders_map_b);
 
 	remove_redundant_dc(res, prefer_downloaded);
-}
-
-bool is_dc_planner(const struct divecomputer *dc)
-{
-	return same_string(dc->model, "planned dive");
 }
 
 // Does this dive have a dive computer for which is_dc_planner has value planned
@@ -3424,18 +2942,6 @@ bool time_during_dive_with_offset(const struct dive *dive, timestamp_t when, tim
 	return start - offset <= when && when <= end + offset;
 }
 
-timestamp_t get_times()
-{
-	int i;
-	struct dive *dive;
-
-	for_each_dive (i, dive) {
-		if (dive->selected)
-			break;
-	}
-	return dive->when;
-}
-
 /* this sets a usually unused copy of the preferences with the units
  * that were active the last time the dive list was saved to git storage
  * (this isn't used in XML files); storing the unit preferences in the
@@ -3466,8 +2972,6 @@ void set_informational_units(const char *units)
 			git_prefs.units.pressure = BAR;
 		if (strstr(units, "PSI"))
 			git_prefs.units.pressure = PSI;
-		if (strstr(units, "PASCAL"))
-			git_prefs.units.pressure = PASCALS;
 		if (strstr(units, "CELSIUS"))
 			git_prefs.units.temperature = CELSIUS;
 		if (strstr(units, "FAHRENHEIT"))
@@ -3510,7 +3014,6 @@ struct dive *make_first_dc(const struct dive *d, int dc_number)
 
 	/* make a new unique id, since we still can't handle two equal ids */
 	res->id = dive_getUniqID();
-	invalidate_dive_cache(res);
 
 	if (dc_number == 0)
 		return res;
@@ -3534,17 +3037,6 @@ struct dive *make_first_dc(const struct dive *d, int dc_number)
 	free(old_dc);
 
 	return res;
-}
-
-int count_divecomputers(const struct dive *d)
-{
-	int ret = 1;
-	struct divecomputer *dc = d->dc.next;
-	while (dc) {
-		ret++;
-		dc = dc->next;
-	}
-	return ret;
 }
 
 static void delete_divecomputer(struct dive *d, int num)
@@ -3572,12 +3064,6 @@ static void delete_divecomputer(struct dive *d, int num)
 			free_dc(dc);
 		}
 	}
-
-	/* If this is the currently displayed dive, we might have to adjust
-	 * the currently displayed dive computer. */
-	if (d == current_dive && dc_number >= count_divecomputers(d))
-		dc_number--;
-	invalidate_dive_cache(d);
 }
 
 /* Clone a dive and delete goven dive computer */
@@ -3591,7 +3077,6 @@ struct dive *clone_delete_divecomputer(const struct dive *d, int dc_number)
 
 	/* make a new unique id, since we still can't handle two equal ids */
 	res->id = dive_getUniqID();
-	invalidate_dive_cache(res);
 
 	delete_divecomputer(res, dc_number);
 
@@ -3629,26 +3114,13 @@ void split_divecomputer(const struct dive *src, int num, struct dive **out1, str
 	}
 }
 
-/* helper function to make it easier to work with our structures
- * we don't interpolate here, just use the value from the last sample up to that time */
-int get_depth_at_time(const struct divecomputer *dc, unsigned int time)
-{
-	int depth = 0;
-	if (dc && dc->sample)
-		for (int i = 0; i < dc->samples; i++) {
-			if (dc->sample[i].time.seconds > time)
-				break;
-			depth = dc->sample[i].depth.mm;
-		}
-	return depth;
-}
-
 //Calculate O2 in best mix
-fraction_t best_o2(depth_t depth, const struct dive *dive)
+fraction_t best_o2(depth_t depth, const struct dive *dive, bool in_planner)
 {
 	fraction_t fo2;
+	int po2 = in_planner ? prefs.bottompo2 : prefs.modpO2 * 1000;
 
-	fo2.permille = (prefs.bottompo2 * 100 / depth_to_mbar(depth.mm, dive)) * 10;	//use integer arithmetic to round down to nearest percent
+	fo2.permille = (po2 * 100 / depth_to_mbar(depth.mm, dive)) * 10;	//use integer arithmetic to round down to nearest percent
 	// Don't permit >100% O2
 	if (fo2.permille > 1000)
 		fo2.permille = 1000;
@@ -3691,10 +3163,20 @@ int get_surface_pressure_in_mbar(const struct dive *dive, bool non_null)
 	return mbar;
 }
 
+/* This returns the conversion factor that you need to multiply
+ * a (relative) depth in mm to obtain a (relative) pressure in mbar.
+ * As everywhere in Subsurface, the expected unit of a salinity is
+ * g/10l such that sea water has a salinity of 10300
+ */
+static double salinity_to_specific_weight(int salinity)
+{
+	return salinity * 0.981 / 100000.0;
+}
+
 /* Pa = N/m^2 - so we determine the weight (in N) of the mass of 10m
  * of water (and use standard salt water at 1.03kg per liter if we don't know salinity)
  * and add that to the surface pressure (or to 1013 if that's unknown) */
-int calculate_depth_to_mbar(int depth, pressure_t surface_pressure, int salinity)
+static int calculate_depth_to_mbar(int depth, pressure_t surface_pressure, int salinity)
 {
 	double specific_weight;
 	int mbar = surface_pressure.mbar;
@@ -3705,8 +3187,8 @@ int calculate_depth_to_mbar(int depth, pressure_t surface_pressure, int salinity
 		salinity = SEAWATER_SALINITY;
 	if (salinity < 500)
 		salinity += FRESHWATER_SALINITY;
-	specific_weight = salinity / 10000.0 * 0.981;
-	mbar += lrint(depth / 10.0 * specific_weight);
+	specific_weight = salinity_to_specific_weight(salinity);
+	mbar += lrint(depth * specific_weight);
 	return mbar;
 }
 
@@ -3731,13 +3213,11 @@ double depth_to_atm(int depth, const struct dive *dive)
  * take care of this, but the Uemis we support natively */
 int rel_mbar_to_depth(int mbar, const struct dive *dive)
 {
-	int cm;
-	double specific_weight = 1.03 * 0.981;
+	double specific_weight = salinity_to_specific_weight(SEAWATER_SALINITY);
 	if (dive->dc.salinity)
-		specific_weight = dive->dc.salinity / 10000.0 * 0.981;
+		specific_weight = salinity_to_specific_weight(dive->dc.salinity);
 	/* whole mbar gives us cm precision */
-	cm = (int)lrint(mbar / specific_weight);
-	return cm * 10;
+	return (int)lrint(mbar / specific_weight);
 }
 
 int mbar_to_depth(int mbar, const struct dive *dive)
@@ -3770,7 +3250,11 @@ depth_t gas_mnd(struct gasmix mix, depth_t end, const struct dive *dive, int rou
 	int maxambient = prefs.o2narcotic ?
 					(int)lrint(ppo2n2.mbar / (1 - get_he(mix) / 1000.0))
 			      :
-					(int)lrint(ppo2n2.mbar * N2_IN_AIR / (1000 - get_he(mix) - get_o2(mix)));
+					get_n2(mix) > 0 ?
+						(int)lrint(ppo2n2.mbar * N2_IN_AIR / get_n2(mix))
+					:
+						// Actually: Infinity
+						1000000;
 	rounded_depth.mm = (int)lrint(((double)mbar_to_depth(maxambient, dive)) / roundto) * roundto;
 	return rounded_depth;
 }
@@ -3790,12 +3274,7 @@ struct dive_site *get_dive_site_for_dive(const struct dive *dive)
 const char *get_dive_country(const struct dive *dive)
 {
 	struct dive_site *ds = dive->dive_site;
-	if (ds) {
-		int idx = taxonomy_index_for_category(&ds->taxonomy, TC_COUNTRY);
-		if (idx >= 0)
-			return ds->taxonomy.category[idx].value;
-	}
-	return NULL;
+	return ds ? taxonomy_get_country(&ds->taxonomy) : NULL;
 }
 
 const char *get_dive_location(const struct dive *dive)
@@ -3834,6 +3313,11 @@ struct divecomputer *get_dive_dc(struct dive *dive, int nr)
 			return &dive->dc;
 	}
 	return dc;
+}
+
+const struct divecomputer *get_dive_dc_const(const struct dive *dive, int nr)
+{
+	return get_dive_dc((struct dive *)dive, nr);
 }
 
 struct dive *get_dive_by_uniq_id(int id)

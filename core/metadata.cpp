@@ -5,11 +5,18 @@
 #include "qthelper.h"
 #include <QString>
 #include <QFile>
+#include <QFileInfo>
 #include <QDateTime>
 
 // Weirdly, android builds fail owing to undefined UINT64_MAX
 #ifndef UINT64_MAX
 #define UINT64_MAX (~0ULL)
+#endif
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+#define SKIP_EMPTY Qt::SkipEmptyParts
+#else
+#define SKIP_EMPTY QString::SkipEmptyParts
 #endif
 
 // The following functions fetch an arbitrary-length _unsigned_ integer from either
@@ -184,6 +191,18 @@ static bool parseMP4(QFile &f, metadata *metadata)
 			// Recurse into "moov", "trak", "mdia" and "udta" atoms
 			atom_stack.push_back(atom_size);
 			continue;
+		} else if (!memcmp(type, "mvhd", 4) && atom_size >= 100 && atom_size < 4096) {
+			std::vector<char> data(atom_size);
+			if (f.read(&data[0], atom_size) != static_cast<int>(atom_size))
+				break;
+
+			timestamp_t timestamp = getBE<uint32_t>(&data[4]);
+
+			// Timestamp is given as seconds since midnight 1904/1/1. To be convertible to the UNIX epoch
+			// it must be larger than 2082844800.
+			// Note that we only set timestamp if not already set, because we give priority to XMP data.
+			if (!metadata->timestamp && timestamp >= 2082844800)
+				metadata->timestamp = timestamp - 2082844800;
 		} else if (!memcmp(type, "mdhd", 4) && atom_size >= 24 && atom_size < 4096) {
 			// Parse "mdhd" (media header).
 			// Sanity check: size between 24 and 4096
@@ -235,9 +254,8 @@ static bool parseMP4(QFile &f, metadata *metadata)
 				break;
 
 			static const char xmp_uid[17] = "\xBE\x7A\xCF\xCB\x97\xA9\x42\xE8\x9C\x71\x99\x94\x91\xE3\xAF\xAC";
-			if (!memcmp(&d[0], xmp_uid, 16)) {
+			if (!memcmp(&d[0], xmp_uid, 16))
 				parseXMP(&d[16], atom_size - 16, metadata);
-			}
 		} else {
 			// Jump over unknown atom
 			if (!f.seek(f.pos() + atom_size)) // TODO: switch to QFile::skip()
@@ -276,7 +294,7 @@ static bool parseDate(const QString &s_in, timestamp_t &timestamp)
 	}
 
 	// I've also seen "Weekday Mon  Day hh:mm:ss yyyy"(!)
-	QStringList items = s.split(' ', QString::SkipEmptyParts);
+	QStringList items = s.split(' ', SKIP_EMPTY);
 	if (items.size() < 4)
 		return false;
 

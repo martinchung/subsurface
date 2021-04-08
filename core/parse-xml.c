@@ -21,6 +21,7 @@
 
 #include "gettext.h"
 
+#include "dive.h"
 #include "divesite.h"
 #include "errorhelper.h"
 #include "subsurface-string.h"
@@ -31,12 +32,13 @@
 #include "membuffer.h"
 #include "picture.h"
 #include "qthelper.h"
+#include "sample.h"
 #include "tag.h"
+#include "xmlparams.h"
 
-int quit, force_root;
 int last_xml_version = -1;
 
-static xmlDoc *test_xslt_transforms(xmlDoc *doc, const char **params);
+static xmlDoc *test_xslt_transforms(xmlDoc *doc, const struct xml_params *params);
 
 const struct units SI_units = SI_UNITS;
 const struct units IMPERIAL_units = IMPERIAL_UNITS;
@@ -829,7 +831,8 @@ static void try_to_fill_dc(struct divecomputer *dc, const char *name, char *buf,
 	if (MATCH("model", utf8_string, &dc->model))
 		return;
 	if (MATCH("deviceid", hex_value, &deviceid)) {
-		set_dc_deviceid(dc, deviceid);
+		set_dc_deviceid(dc, deviceid, &device_table); // prefer already known serial/firmware over those from the loaded log
+		set_dc_deviceid(dc, deviceid, state->devices);
 		return;
 	}
 	if (MATCH("diveid", hex_value, &dc->diveid))
@@ -1220,7 +1223,10 @@ static void try_to_fill_dive(struct dive *dive, const char *name, char *buf, str
 {
 	char *hash = NULL;
 	cylinder_t *cyl = dive->cylinders.nr > 0 ? get_cylinder(dive, dive->cylinders.nr - 1) : NULL;
+	weightsystem_t *ws = dive->weightsystems.nr > 0 ?
+		&dive->weightsystems.weightsystems[dive->weightsystems.nr - 1] : NULL;
 	pressure_t p;
+	weight_t w;
 	start_match("dive", name, buf);
 
 	switch (state->import_source) {
@@ -1323,12 +1329,18 @@ static void try_to_fill_dive(struct dive *dive, const char *name, char *buf, str
 		return;
 	if (MATCH_STATE("airpressure.dive", pressure, &dive->surface_pressure))
 		return;
-	if (MATCH("description.weightsystem", utf8_string, &dive->weightsystems.weightsystems[dive->weightsystems.nr - 1].description))
+	if (ws) {
+		if (MATCH("description.weightsystem", utf8_string, &ws->description))
+			return;
+		if (MATCH_STATE("weight.weightsystem", weight, &ws->weight))
+			return;
+	}
+	if (MATCH_STATE("weight", weight, &w)) {
+		weightsystem_t ws = empty_weightsystem;
+		ws.weight = w;
+		add_cloned_weightsystem(&dive->weightsystems, ws);
 		return;
-	if (MATCH_STATE("weight.weightsystem", weight, &dive->weightsystems.weightsystems[dive->weightsystems.nr - 1].weight))
-		return;
-	if (MATCH_STATE("weight", weight, &dive->weightsystems.weightsystems[dive->weightsystems.nr - 1].weight))
-		return;
+	}
 	if (cyl) {
 		if (MATCH("size.cylinder", cylindersize, &cyl->type.size))
 			return;
@@ -1377,12 +1389,12 @@ static void try_to_fill_trip(dive_trip_t *dive_trip, const char *name, char *buf
 }
 
 /* We're processing a divesite entry - try to fill the components */
-static void try_to_fill_dive_site(struct dive_site *ds, const char *name, char *buf)
+static void try_to_fill_dive_site(struct parser_state *state, const char *name, char *buf)
 {
-	start_match("divesite", name, buf);
+	struct dive_site *ds = state->cur_dive_site;
+	char *taxonomy_value = NULL;
 
-	if (ds->taxonomy.category == NULL)
-		ds->taxonomy.category = alloc_taxonomy();
+	start_match("divesite", name, buf);
 
 	if (MATCH("uuid", hex_value, &ds->uuid))
 		return;
@@ -1394,17 +1406,70 @@ static void try_to_fill_dive_site(struct dive_site *ds, const char *name, char *
 		return;
 	if (MATCH("gps", gps_location, ds))
 		return;
-	if (MATCH("cat.geo", get_index, (int *)&ds->taxonomy.category[ds->taxonomy.nr].category))
+	if (MATCH("cat.geo", get_index, &state->taxonomy_category))
 		return;
-	if (MATCH("origin.geo", get_index, (int *)&ds->taxonomy.category[ds->taxonomy.nr].origin))
+	if (MATCH("origin.geo", get_index, &state->taxonomy_origin))
 		return;
-	if (MATCH("value.geo", utf8_string, &ds->taxonomy.category[ds->taxonomy.nr].value)) {
-		if (ds->taxonomy.nr < TC_NR_CATEGORIES)
-			ds->taxonomy.nr++;
+	if (MATCH("value.geo", utf8_string, &taxonomy_value)) {
+		/* The code assumes that "value.geo" comes last, which is against
+		 * the expectations of an XML file. Let's at least make sure that
+		 * cat and origin have been set! */
+		if (state->taxonomy_category < 0 || state->taxonomy_origin < 0) {
+			report_error("Warning: taxonomy value without origin or category");
+		} else {
+			taxonomy_set_category(&ds->taxonomy, state->taxonomy_category,
+					      taxonomy_value, state->taxonomy_origin);
+		}
+		state->taxonomy_category = state->taxonomy_origin = -1;
+		free(taxonomy_value);
 		return;
 	}
 
 	nonmatch("divesite", name, buf);
+}
+
+static void try_to_fill_filter(struct filter_preset *filter, const char *name, char *buf)
+{
+	start_match("filterpreset", name, buf);
+
+	char *s = NULL;
+	if (MATCH("name", utf8_string, &s)) {
+		filter_preset_set_name(filter, s);
+		free(s);
+		return;
+	}
+
+	nonmatch("filterpreset", name, buf);
+}
+
+static void try_to_fill_fulltext(const char *name, char *buf, struct parser_state *state)
+{
+	start_match("fulltext", name, buf);
+
+	if (MATCH("mode", utf8_string, &state->fulltext_string_mode))
+		return;
+	if (MATCH("fulltext", utf8_string, &state->fulltext))
+		return;
+
+	nonmatch("fulltext", name, buf);
+}
+
+static void try_to_fill_filter_constraint(const char *name, char *buf, struct parser_state *state)
+{
+	start_match("fulltext", name, buf);
+
+	if (MATCH("type", utf8_string, &state->filter_constraint_type))
+		return;
+	if (MATCH("string_mode", utf8_string, &state->filter_constraint_string_mode))
+		return;
+	if (MATCH("range_mode", utf8_string, &state->filter_constraint_range_mode))
+		return;
+	if (MATCH("negate", get_bool, &state->filter_constraint_negate))
+		return;
+	if (MATCH("constraint", utf8_string, &state->filter_constraint))
+		return;
+
+	nonmatch("fulltext", name, buf);
 }
 
 static bool entry(const char *name, char *buf, struct parser_state *state)
@@ -1423,7 +1488,19 @@ static bool entry(const char *name, char *buf, struct parser_state *state)
 		return true;
 	}
 	if (state->cur_dive_site) {
-		try_to_fill_dive_site(state->cur_dive_site, name, buf);
+		try_to_fill_dive_site(state, name, buf);
+		return true;
+	}
+	if (state->in_filter_constraint) {
+		try_to_fill_filter_constraint(name, buf, state);
+		return true;
+	}
+	if (state->in_fulltext) {
+		try_to_fill_fulltext(name, buf, state);
+		return true;
+	}
+	if (state->cur_filter) {
+		try_to_fill_filter(state->cur_filter, name, buf);
 		return true;
 	}
 	if (!state->cur_event.deleted) {
@@ -1558,6 +1635,9 @@ static struct nesting {
 	  { "divecomputerid", dc_settings_start, dc_settings_end },
 	  { "settings", settings_start, settings_end },
 	  { "site", dive_site_start, dive_site_end },
+	  { "filterpreset", filter_preset_start, filter_preset_end },
+	  { "fulltext", fulltext_start, fulltext_end },
+	  { "constraint", filter_constraint_start, filter_constraint_end },
 	  { "dive", dive_start, dive_end },
 	  { "Dive", dive_start, dive_end },
 	  { "trip", trip_start, trip_end },
@@ -1653,7 +1733,8 @@ static const char *preprocess_divelog_de(const char *buffer)
 
 int parse_xml_buffer(const char *url, const char *buffer, int size,
 		     struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites,
-		     const char **params)
+		     struct device_table *devices, struct filter_preset_table *filter_presets,
+		     const struct xml_params *params)
 {
 	UNUSED(size);
 	xmlDoc *doc;
@@ -1665,6 +1746,8 @@ int parse_xml_buffer(const char *url, const char *buffer, int size,
 	state.target_table = table;
 	state.trips = trips;
 	state.sites = sites;
+	state.devices = devices;
+	state.filter_presets = filter_presets;
 	doc = xmlReadMemory(res, strlen(res), url, NULL, 0);
 	if (!doc)
 		doc = xmlReadMemory(res, strlen(res), url, "latin1", 0);
@@ -1706,7 +1789,8 @@ static timestamp_t parse_dlf_timestamp(unsigned char *buffer)
 	return offset + 946684800;
 }
 
-int parse_dlf_buffer(unsigned char *buffer, size_t size, struct dive_table *table, struct trip_table *trips, struct dive_site_table *sites)
+int parse_dlf_buffer(unsigned char *buffer, size_t size, struct dive_table *table, struct trip_table *trips,
+		     struct dive_site_table *sites, struct device_table *devices)
 {
 	unsigned char *ptr = buffer;
 	unsigned char event;
@@ -1730,6 +1814,7 @@ int parse_dlf_buffer(unsigned char *buffer, size_t size, struct dive_table *tabl
 	state.target_table = table;
 	state.trips = trips;
 	state.sites = sites;
+	state.devices = devices;
 
 	// Check for the correct file magic
 	if (ptr[0] != 'D' || ptr[1] != 'i' || ptr[2] != 'v' || ptr[3] != 'E')
@@ -2239,7 +2324,7 @@ static struct xslt_files {
 	  { NULL, }
   };
 
-static xmlDoc *test_xslt_transforms(xmlDoc *doc, const char **params)
+static xmlDoc *test_xslt_transforms(xmlDoc *doc, const struct xml_params *params)
 {
 	struct xslt_files *info = xslt_files;
 	xmlDoc *transformed;
@@ -2272,7 +2357,7 @@ static xmlDoc *test_xslt_transforms(xmlDoc *doc, const char **params)
 			report_error(translate("gettextFromC", "Can't open stylesheet %s"), info->file);
 			return doc;
 		}
-		transformed = xsltApplyStylesheet(xslt, doc, params);
+		transformed = xsltApplyStylesheet(xslt, doc, xml_params_get(params));
 		xmlFreeDoc(doc);
 		xsltFreeStylesheet(xslt);
 

@@ -16,6 +16,7 @@
 #include "preferences_reset.h"
 
 #include "core/qthelper.h"
+#include "core/subsurface-qt/divelistnotifier.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,17 +24,16 @@
 #include <QStackedWidget>
 #include <QDialogButtonBox>
 #include <QAbstractButton>
-#include <QDebug>
 
-PreferencesDialog* PreferencesDialog::instance()
+PreferencesDialog *PreferencesDialog::instance()
 {
 	static PreferencesDialog *self = new PreferencesDialog();
 	return self;
 }
 
-void PreferencesDialog::emitSettingsChanged()
+static bool abstractpreferenceswidget_lessthan(const AbstractPreferencesWidget *p1, const AbstractPreferencesWidget *p2)
 {
-	emit settingsChanged();
+	return p1->positionHeight() < p2->positionHeight();
 }
 
 PreferencesDialog::PreferencesDialog()
@@ -65,20 +65,27 @@ PreferencesDialog::PreferencesDialog()
 
 	setLayout(v);
 
-	addPreferencePage(new PreferencesLanguage());
-	addPreferencePage(new PreferencesGeoreference());
-	addPreferencePage(new PreferencesDefaults());
-	addPreferencePage(new PreferencesUnits());
-	addPreferencePage(new PreferencesGraph());
-	addPreferencePage(new PreferencesNetwork());
-	addPreferencePage(new PreferencesCloud());
-	addPreferencePage(new PreferencesEquipment());
-	addPreferencePage(new PreferencesMedia());
-	addPreferencePage(new PreferencesDc());
-	addPreferencePage(new PreferencesLog());
-	addPreferencePage(new PreferencesReset());
+	pages.push_back(new PreferencesLanguage);
+	pages.push_back(new PreferencesGeoreference);
+	pages.push_back(new PreferencesDefaults);
+	pages.push_back(new PreferencesUnits);
+	pages.push_back(new PreferencesGraph);
+	pages.push_back(new PreferencesNetwork);
+	pages.push_back(new PreferencesCloud);
+	pages.push_back(new PreferencesEquipment);
+	pages.push_back(new PreferencesMedia);
+	pages.push_back(new PreferencesDc);
+	pages.push_back(new PreferencesLog);
+	pages.push_back(new PreferencesReset);
+	std::sort(pages.begin(), pages.end(), abstractpreferenceswidget_lessthan);
 
-	refreshPages();
+	for (AbstractPreferencesWidget *page: pages) {
+		QListWidgetItem *item = new QListWidgetItem(page->icon(), page->name());
+		pagesList->addItem(item);
+		pagesStack->addWidget(page);
+		page->refreshSettings();
+		connect(page, &AbstractPreferencesWidget::settingsChanged, &diveListNotifier, &DiveListNotifier::settingsChanged);
+	}
 
 	connect(pagesList, &QListWidget::currentRowChanged,
 		pagesStack, &QStackedWidget::setCurrentIndex);
@@ -102,61 +109,31 @@ void PreferencesDialog::buttonClicked(QAbstractButton* btn)
 	}
 }
 
-bool abstractpreferenceswidget_lessthan(AbstractPreferencesWidget *p1, AbstractPreferencesWidget *p2)
-{
-	return p1->positionHeight() < p2->positionHeight();
-}
-
-void PreferencesDialog::addPreferencePage(AbstractPreferencesWidget *page)
-{
-	pages.push_back(page);
-	std::sort(pages.begin(), pages.end(), abstractpreferenceswidget_lessthan);
-}
-
 void PreferencesDialog::refreshPages()
 {
-	// Remove things
-	pagesList->clear();
-	while(pagesStack->count()) {
-		QWidget *curr = pagesStack->widget(0);
-		pagesStack->removeWidget(curr);
-		curr->setParent(0);
-	}
-
-	// Read things
-	Q_FOREACH(AbstractPreferencesWidget *page, pages) {
-		QListWidgetItem *item = new QListWidgetItem(page->icon(), page->name());
-		pagesList->addItem(item);
-		pagesStack->addWidget(page);
+	for (AbstractPreferencesWidget *page: pages)
 		page->refreshSettings();
-	}
 }
 
 void PreferencesDialog::applyRequested(bool closeIt)
 {
-	Q_FOREACH(AbstractPreferencesWidget *page, pages) {
-		connect(page, &AbstractPreferencesWidget::settingsChanged, this, &PreferencesDialog::settingsChanged, Qt::UniqueConnection);
+	for (AbstractPreferencesWidget *page: pages)
 		page->syncSettings();
-	}
-	emit settingsChanged();
+	emit diveListNotifier.settingsChanged();
 	if (closeIt)
 		accept();
 }
 
 void PreferencesDialog::cancelRequested()
 {
-	Q_FOREACH(AbstractPreferencesWidget *page, pages) {
-		page->refreshSettings();
-	}
+	refreshPages();
 	reject();
 }
 
 void PreferencesDialog::defaultsRequested()
 {
 	copy_prefs(&default_prefs, &prefs);
-	Q_FOREACH(AbstractPreferencesWidget *page, pages) {
-		page->refreshSettings();
-	}
-	emit settingsChanged();
+	refreshPages();
+	emit diveListNotifier.settingsChanged();
 	accept();
 }

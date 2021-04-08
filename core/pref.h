@@ -47,7 +47,6 @@ enum def_file_behavior {
 
 typedef struct {
 	bool dont_check_for_updates;
-	bool dont_check_exists;
 	const char *last_version_used;
 	int next_check;
 } update_manager_prefs_t;
@@ -81,7 +80,7 @@ struct preferences {
 	int animation_speed;
 
 	// ********** CloudStorage **********
-	bool       cloud_auto_sync;
+	bool        cloud_auto_sync;
 	const char *cloud_base_url;
 	const char *cloud_git_url;
 	const char *cloud_storage_email;
@@ -109,6 +108,7 @@ struct preferences {
 	// ********** Equipment tab *******
 	const char *default_cylinder;
 	bool        display_unused_tanks;
+	bool        display_default_tank_infos;
 
 	// ********** General **********
 	bool        auto_recalculate_thumbnails;
@@ -128,11 +128,11 @@ struct preferences {
 	geocoding_prefs_t geocoding;
 
 	// ********** Language **********
-	const char *    date_format;
+	const char     *date_format;
 	bool            date_format_override;
-	const char *    date_format_short;
+	const char     *date_format_short;
 	locale_prefs_t  locale; //: TODO: move the rest of locale based info here.
-	const char *    time_format;
+	const char     *time_format;
 	bool            time_format_override;
 
 	// ********** LocationService **********
@@ -226,6 +226,9 @@ extern const char *system_default_filename();
 extern bool subsurface_ignore_font(const char *font);
 extern void subsurface_OS_pref_setup();
 extern void copy_prefs(struct preferences *src, struct preferences *dest);
+
+extern void set_informational_units(const char *units);
+extern void set_git_prefs(const char *prefs);
 
 #ifdef __cplusplus
 }

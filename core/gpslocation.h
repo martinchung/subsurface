@@ -29,15 +29,15 @@ struct DiveAndLocation {
 class GpsLocation : public QObject {
 	Q_OBJECT
 public:
-	GpsLocation(void (*showMsgCB)(const char *msg), QObject *parent);
+	GpsLocation();
 	~GpsLocation();
 	static GpsLocation *instance();
-	static bool hasInstance();
 	std::vector<DiveAndLocation> getLocations();
 	int getGpsNum() const;
 	bool hasLocationsSource();
 	QString currentPosition();
-
+	void setLogCallBack(void (*showMsgCB)(const char *msg));
+	QString getFixString();
 	QMap<qint64, gpsTracker> currentGPSInfo() const;
 
 private:
@@ -49,7 +49,6 @@ private:
 	QNetworkReply *reply;
 	QString userAgent;
 	void (*showMessageCB)(const char *msg);
-	static GpsLocation *m_Instance;
 	bool waitingForPosition;
 	QMap<qint64, gpsTracker> m_trackers;
 	QList<gpsTracker> m_deletedTrackers;
@@ -69,7 +68,6 @@ public slots:
 	void newPosition(QGeoPositionInfo pos);
 	void updateTimeout();
 	void positionSourceError(QGeoPositionInfoSource::Error error);
-	void postError(QNetworkReply::NetworkError error);
 	void setGpsTimeThreshold(int seconds);
 #ifdef SUBSURFACE_MOBILE
 	void clearGpsData();

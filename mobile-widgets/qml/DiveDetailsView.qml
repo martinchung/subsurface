@@ -12,9 +12,18 @@ Item {
 	property real col1Width: gridWidth * 0.40
 	property real col2Width: gridWidth * 0.30
 	property real col3Width: gridWidth * 0.30
+	property int myId: -1
 
 	width: diveDetailsPage.width - diveDetailsPage.leftPadding - diveDetailsPage.rightPadding
 	height: divePlate.implicitHeight + bottomLayout.implicitHeight + Kirigami.Units.iconSizes.large
+
+	Connections {
+		target: rootItem
+		onSettingsChanged: {
+			qmlProfile.update()
+		}
+	}
+
 	Rectangle {
 		z: 99
 		color: subsurfaceTheme.textColor
@@ -229,6 +238,7 @@ Item {
 				anchors.fill: parent
 				clip: true
 				property real lastScale: 1.0 // final scale at the end of previous pinch
+				diveId: detailsView.myId
 				Rectangle {
 					color: "transparent"
 					opacity: 0.6
@@ -572,11 +582,6 @@ Item {
 			Layout.columnSpan: 3
 			Layout.fillWidth: true
 			Layout.minimumHeight: Kirigami.Units.gridUnit * 6
-		}
-		Component.onCompleted: {
-			qmlProfile.setMargin(Kirigami.Units.smallSpacing)
-			qmlProfile.diveId = model.id;
-			qmlProfile.update();
 		}
 	}
 }

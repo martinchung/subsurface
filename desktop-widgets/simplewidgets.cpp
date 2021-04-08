@@ -10,8 +10,10 @@
 #include <QDesktopServices>
 #include <QToolTip>
 #include <QClipboard>
+#include <QCompleter>
 
 #include "core/file.h"
+#include "core/filterpreset.h"
 #include "core/divesite.h"
 #include "desktop-widgets/mainwindow.h"
 #include "core/qthelper.h"
@@ -23,106 +25,6 @@
 #include "core/metadata.h"
 #include "core/tag.h"
 
-double MinMaxAvgWidget::average() const
-{
-	return avgValue->text().toDouble();
-}
-
-double MinMaxAvgWidget::maximum() const
-{
-	return maxValue->text().toDouble();
-}
-
-double MinMaxAvgWidget::minimum() const
-{
-	return minValue->text().toDouble();
-}
-
-MinMaxAvgWidget::MinMaxAvgWidget(QWidget *parent) : QWidget(parent)
-{
-	avgIco = new QLabel(this);
-	avgIco->setPixmap(QIcon(":value-average-icon").pixmap(16, 16));
-	avgIco->setToolTip(gettextFromC::tr("Average"));
-	minIco = new QLabel(this);
-	minIco->setPixmap(QIcon(":value-minimum-icon").pixmap(16, 16));
-	minIco->setToolTip(gettextFromC::tr("Minimum"));
-	maxIco = new QLabel(this);
-	maxIco->setPixmap(QIcon(":value-maximum-icon").pixmap(16, 16));
-	maxIco->setToolTip(gettextFromC::tr("Maximum"));
-	avgValue = new QLabel(this);
-	minValue = new QLabel(this);
-	maxValue = new QLabel(this);
-
-	QGridLayout *formLayout = new QGridLayout;
-	formLayout->addWidget(maxIco, 0, 0);
-	formLayout->addWidget(maxValue, 0, 1);
-	formLayout->addWidget(avgIco, 1, 0);
-	formLayout->addWidget(avgValue, 1, 1);
-	formLayout->addWidget(minIco, 2, 0);
-	formLayout->addWidget(minValue, 2, 1);
-	setLayout(formLayout);
-}
-
-void MinMaxAvgWidget::clear()
-{
-	avgValue->setText(QString());
-	maxValue->setText(QString());
-	minValue->setText(QString());
-}
-
-void MinMaxAvgWidget::setAverage(double average)
-{
-	avgValue->setText(QString::number(average));
-}
-
-void MinMaxAvgWidget::setMaximum(double maximum)
-{
-	maxValue->setText(QString::number(maximum));
-}
-void MinMaxAvgWidget::setMinimum(double minimum)
-{
-	minValue->setText(QString::number(minimum));
-}
-
-void MinMaxAvgWidget::setAverage(const QString &average)
-{
-	avgValue->setText(average);
-}
-
-void MinMaxAvgWidget::setMaximum(const QString &maximum)
-{
-	maxValue->setText(maximum);
-}
-
-void MinMaxAvgWidget::setMinimum(const QString &minimum)
-{
-	minValue->setText(minimum);
-}
-
-void MinMaxAvgWidget::overrideMinToolTipText(const QString &newTip)
-{
-	minIco->setToolTip(newTip);
-	minValue->setToolTip(newTip);
-}
-
-void MinMaxAvgWidget::overrideAvgToolTipText(const QString &newTip)
-{
-	avgIco->setToolTip(newTip);
-	avgValue->setToolTip(newTip);
-}
-
-void MinMaxAvgWidget::overrideMaxToolTipText(const QString &newTip)
-{
-	maxIco->setToolTip(newTip);
-	maxValue->setToolTip(newTip);
-}
-
-void MinMaxAvgWidget::setAvgVisibility(bool visible)
-{
-	avgIco->setVisible(visible);
-	avgValue->setVisible(visible);
-}
-
 void RenumberDialog::buttonClicked(QAbstractButton *button)
 {
 	if (ui.buttonBox->buttonRole(button) == QDialogButtonBox::AcceptRole) {
@@ -132,10 +34,8 @@ void RenumberDialog::buttonClicked(QAbstractButton *button)
 		int newNr = ui.spinBox->value();
 		struct dive *d;
 		for_each_dive (i, d) {
-			if (!selectedOnly || d->selected) {
-				invalidate_dive_cache(d);
+			if (!selectedOnly || d->selected)
 				renumberedDives.append({ d, newNr++ });
-			}
 		}
 		Command::renumberDives(renumberedDives);
 	}
@@ -191,9 +91,11 @@ void ShiftTimesDialog::buttonClicked(QAbstractButton *button)
 	}
 
 	ui.timeEdit->setTime(QTime(0, 0, 0, 0));
-	when = get_times(); //get time of first selected dive
-	ui.currentTime->setText(get_dive_date_string(when));
-	ui.shiftedTime->setText(get_dive_date_string(when));
+	dive *d = first_selected_dive();
+	if (d) {
+		ui.currentTime->setText(get_dive_date_string(d->when));
+		ui.shiftedTime->setText(get_dive_date_string(d->when));
+	}
 }
 
 void ShiftTimesDialog::changeTime()
@@ -478,6 +380,42 @@ void DiveComponentSelection::buttonClicked(QAbstractButton *button)
 	}
 }
 
+AddFilterPresetDialog::AddFilterPresetDialog(const QString &defaultName, QWidget *parent)
+{
+	ui.setupUi(this);
+	ui.name->setText(defaultName);
+	connect(ui.name, &QLineEdit::textChanged, this, &AddFilterPresetDialog::nameChanged);
+	connect(ui.buttonBox, &QDialogButtonBox::accepted, this, &AddFilterPresetDialog::accept);
+	connect(ui.buttonBox, &QDialogButtonBox::rejected, this, &AddFilterPresetDialog::reject);
+	nameChanged(ui.name->text());
+
+	// Create a completer so that the user can easily overwrite existing presets.
+	QStringList presets;
+	int count = filter_presets_count();
+	presets.reserve(count);
+	for (int i = 0; i < count; ++i)
+		presets.push_back(filter_preset_name_qstring(i));
+	QCompleter *completer = new QCompleter(presets, this);
+	completer->setCaseSensitivity(Qt::CaseInsensitive);
+	ui.name->setCompleter(completer);
+}
+
+void AddFilterPresetDialog::nameChanged(const QString &text)
+{
+	QString trimmed = text.trimmed();
+	bool isEmpty = trimmed.isEmpty();
+	bool exists = !isEmpty && filter_preset_id(trimmed) >= 0;
+	ui.duplicateWarning->setVisible(exists);
+	ui.buttonBox->button(QDialogButtonBox::Ok)->setEnabled(!isEmpty);
+}
+
+QString AddFilterPresetDialog::doit()
+{
+	if (exec() == QDialog::Accepted)
+		return ui.name->text().trimmed();
+	return QString();
+}
+
 TextHyperlinkEventFilter::TextHyperlinkEventFilter(QTextEdit *txtEdit) : QObject(txtEdit),
 	textEdit(txtEdit),
 	scrollView(textEdit->viewport())
@@ -589,6 +527,12 @@ QString TextHyperlinkEventFilter::tryToFormulateUrl(QTextCursor *cursor)
 	return stringMeetsOurUrlRequirements(maybeUrlStr) ? maybeUrlStr : QString();
 }
 
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+#define SKIP_EMPTY Qt::SkipEmptyParts
+#else
+#define SKIP_EMPTY QString::SkipEmptyParts
+#endif
+
 QString TextHyperlinkEventFilter::fromCursorTilWhitespace(QTextCursor *cursor, bool searchBackwards)
 {
 	// fromCursorTilWhitespace calls cursor->movePosition repeatedly, while
@@ -626,7 +570,7 @@ QString TextHyperlinkEventFilter::fromCursorTilWhitespace(QTextCursor *cursor, b
 		  "mn.abcd." for the url (wrong). So we have to go to 'i', to
 		  capture "mn.abcd.edu " (with trailing space), and then clean it up.
 		*/
-		QStringList list = grownText.split(QRegExp("\\s"), QString::SkipEmptyParts);
+		QStringList list = grownText.split(QRegExp("\\s"), SKIP_EMPTY);
 		if (!list.isEmpty()) {
 			result = list[0];
 		}

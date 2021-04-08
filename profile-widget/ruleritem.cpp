@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "profile-widget/ruleritem.h"
-#ifndef SUBSURFACE_MOBILE
-#include "desktop-widgets/preferences/preferencesdialog.h"
-#endif
 #include "profile-widget/profilewidget2.h"
 #include "core/display.h"
 #include "core/settings/qPrefTechnicalDetails.h"
@@ -116,7 +113,7 @@ void RulerItem2::recalculate()
 	}
 	QLineF line(startPoint, endPoint);
 	setLine(line);
-	compare_samples(&pInfo, source->idx, dest->idx, buffer, 500, 1);
+	compare_samples(dive, &pInfo, source->idx, dest->idx, buffer, 500, 1);
 	text = QString(buffer);
 
 	// draw text
@@ -151,8 +148,9 @@ RulerNodeItem2 *RulerItem2::destNode() const
 	return dest;
 }
 
-void RulerItem2::setPlotInfo(const plot_info &info)
+void RulerItem2::setPlotInfo(const struct dive *d, const plot_info &info)
 {
+	dive = d;
 	pInfo = info;
 	dest->setPlotInfo(info);
 	source->setPlotInfo(info);

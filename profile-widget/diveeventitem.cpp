@@ -3,23 +3,23 @@
 #include "qt-models/diveplotdatamodel.h"
 #include "profile-widget/divecartesianaxis.h"
 #include "profile-widget/animationfunctions.h"
+#include "core/event.h"
 #include "core/libdivecomputer.h"
 #include "core/profile.h"
 #include "core/gettextfromc.h"
 #include "core/metrics.h"
 #include "core/membuffer.h"
+#include "core/sample.h"
 #include "core/subsurface-string.h"
 
 #define DEPTH_NOT_FOUND (-2342)
-
-extern struct ev_select *ev_namelist;
-extern int evn_used;
 
 DiveEventItem::DiveEventItem(QGraphicsItem *parent) : DivePixmapItem(parent),
 	vAxis(NULL),
 	hAxis(NULL),
 	dataModel(NULL),
-	internalEvent(NULL)
+	internalEvent(NULL),
+	dive(NULL)
 {
 	setFlag(ItemIgnoresTransformations);
 }
@@ -54,11 +54,12 @@ struct event *DiveEventItem::getEvent()
 	return internalEvent;
 }
 
-void DiveEventItem::setEvent(struct event *ev, struct gasmix lastgasmix)
+void DiveEventItem::setEvent(const struct dive *d, struct event *ev, struct gasmix lastgasmix)
 {
 	if (!ev)
 		return;
 
+	dive = d;
 	free(internalEvent);
 	internalEvent = clone_event(ev);
 	setupPixmap(lastgasmix);
@@ -95,7 +96,7 @@ void DiveEventItem::setupPixmap(struct gasmix lastgasmix)
 	} else if (internalEvent->type == SAMPLE_EVENT_BOOKMARK) {
 		setPixmap(EVENT_PIXMAP(":dive-bookmark-icon"));
 	} else if (event_is_gaschange(internalEvent)) {
-		struct gasmix mix = get_gasmix_from_event(&displayed_dive, internalEvent);
+		struct gasmix mix = get_gasmix_from_event(dive, internalEvent);
 		struct icd_data icd_data;
 		bool icd = isobaric_counterdiffusion(lastgasmix, mix, &icd_data);
 		if (mix.he.permille) {
@@ -177,7 +178,7 @@ void DiveEventItem::setupToolTipString(struct gasmix lastgasmix)
 
 	if (event_is_gaschange(internalEvent)) {
 		struct icd_data icd_data;
-		struct gasmix mix = get_gasmix_from_event(&displayed_dive, internalEvent);
+		struct gasmix mix = get_gasmix_from_event(dive, internalEvent);
 		struct membuffer mb = {};
 		name += ": ";
 		name += gasname(mix);
@@ -225,15 +226,14 @@ void DiveEventItem::eventVisibilityChanged(const QString&, bool)
 
 bool DiveEventItem::shouldBeHidden()
 {
-	struct event *event = internalEvent;
-	struct dive *dive = &displayed_dive;
-	struct divecomputer *dc = get_dive_dc(dive, dc_number);
+	const struct event *event = internalEvent;
+	const struct divecomputer *dc = get_dive_dc_const(dive, dc_number);
 
 	/*
 	 * Some gas change events are special. Some dive computers just tell us the initial gas this way.
 	 * Don't bother showing those
 	 */
-	struct sample *first_sample = &dc->sample[0];
+	const struct sample *first_sample = &dc->sample[0];
 	if (!strcmp(event->name, "gaschange") &&
 	    (event->time.seconds == 0 ||
 	     (first_sample && event->time.seconds == first_sample->time.seconds) ||

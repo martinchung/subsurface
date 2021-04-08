@@ -81,7 +81,7 @@ TemplatePage {
 				TemplateLabel {
 					text: qsTr("Cylinder:")
 				}
-				TemplateComboBox {
+				TemplateSlimComboBox {
 					id: defaultCylinderBox
 					Layout.fillWidth: true
 					onActivated: {
@@ -145,7 +145,7 @@ TemplatePage {
 					Layout.bottomMargin: Kirigami.Units.largeSpacing / 2
 					Layout.columnSpan: 2
 				}
-				TemplateComboBox {
+				TemplateSlimComboBox {
 					editable: false
 					Layout.columnSpan: 2
 					currentIndex: (subsurfaceTheme.currentTheme === "Blue") ? 0 :
@@ -309,35 +309,58 @@ TemplatePage {
 					Layout.bottomMargin: Kirigami.Units.largeSpacing / 2
 					Layout.columnSpan: 2
 				}
-				RowLayout {
+				Flow {
 					Layout.columnSpan: 2
 					spacing: Kirigami.Units.largeSpacing
 					TemplateButton {
-						text: qsTr("smaller")
+						text: qsTr("very small")
+						fontSize: subsurfaceTheme.regularPointSize / subsurfaceTheme.currentScale * 0.75
+						enabled: subsurfaceTheme.currentScale !== 0.75
+						onClicked: {
+							subsurfaceTheme.currentScale = 0.75
+							rootItem.setupUnits()
+						}
+					}
+					TemplateButton {
+						text: qsTr("small")
 						Layout.fillWidth: true
+						fontSize: subsurfaceTheme.regularPointSize / subsurfaceTheme.currentScale * 0.85
 						enabled: subsurfaceTheme.currentScale !== 0.85
 						onClicked: {
 							subsurfaceTheme.currentScale = 0.85
+							rootItem.setupUnits()
 						}
 					}
 					TemplateButton {
 						text: qsTr("regular")
 						Layout.fillWidth: true
+						fontSize: subsurfaceTheme.regularPointSize / subsurfaceTheme.currentScale * 0.85
 						enabled: subsurfaceTheme.currentScale !== 1.0
 						onClicked: {
 							subsurfaceTheme.currentScale = 1.0
+							rootItem.setupUnits()
 						}
 					}
 					TemplateButton {
-						text: qsTr("larger")
+						text: qsTr("large")
 						Layout.fillWidth: true
+						fontSize: subsurfaceTheme.regularPointSize / subsurfaceTheme.currentScale * 1.15
 						enabled: subsurfaceTheme.currentScale !== 1.15
 						onClicked: {
 							subsurfaceTheme.currentScale = 1.15
+							rootItem.setupUnits()
 						}
 					}
-				}
-				Rectangle {
+					TemplateButton {
+						text: qsTr("very large")
+						Layout.fillWidth: true
+						fontSize: subsurfaceTheme.regularPointSize / subsurfaceTheme.currentScale * 1.3
+						enabled: subsurfaceTheme.currentScale !== 1.3
+						onClicked: {
+							subsurfaceTheme.currentScale = 1.3
+							rootItem.setupUnits()
+						}
+					}
 				}
 			}
 		}
@@ -516,37 +539,31 @@ TemplatePage {
 				}
 				TemplateLabel {
 					text: qsTr("Distance threshold (meters)")
-					//Layout.preferredWidth: gridWidth * 0.75
 				}
 				TemplateTextField {
 					id: distanceThreshold
+					Layout.preferredWidth: Kirigami.Units.gridUnit * 2
 					text: PrefLocationService.distance_threshold
-					//Layout.preferredWidth: gridWidth * 0.25
 					onEditingFinished: {
 						PrefLocationService.distance_threshold = distanceThreshold.text
 					}
 				}
 				TemplateLabel {
 					text: qsTr("Time threshold (minutes)")
-					//Layout.preferredWidth: gridWidth * 0.75
 				}
 				TemplateTextField {
 					id: timeThreshold
+					Layout.preferredWidth: Kirigami.Units.gridUnit * 2
 					text: PrefLocationService.time_threshold / 60
-					//Layout.preferredWidth: gridWidth * 0.25
 					onEditingFinished: {
 						PrefLocationService.time_threshold = timeThreshold.text * 60
 					}
 				}
-			}
-			TemplateLine {
-				visible: sectionAdvanced.isExpanded
-			}
-			GridLayout {
-				id: whichBluetoothDevices
-				visible: sectionAdvanced.isExpanded
-				width: parent.width
-				columns: 2
+
+				TemplateLine {
+					visible: sectionAdvanced.isExpanded
+					Layout.columnSpan: 2
+				}
 				TemplateLabel {
 					text: qsTr("Bluetooth")
 					font.pointSize: subsurfaceTheme.headingPointSize
@@ -558,25 +575,19 @@ TemplatePage {
 				TemplateLabel {
 					text: qsTr("Temporarily show all bluetooth devices \neven if not recognized as dive computers.\nPlease report DCs that need this setting")
 					Layout.fillWidth: true
-					//Layout.preferredWidth: gridWidth * 0.75
 				}
 				SsrfSwitch {
 					id: nonDCButton
 					checked: manager.showNonDiveComputers
-					//Layout.preferredWidth: gridWidth * 0.25
 					onClicked: {
 						manager.showNonDiveComputers = checked
 					}
 				}
-			}
-			TemplateLine {
-				visible: sectionAdvanced.isExpanded
-			}
-			GridLayout {
-				id: display
-				visible: sectionAdvanced.isExpanded
-				width: parent.width
-				columns: 2
+
+				TemplateLine {
+					visible: sectionAdvanced.isExpanded
+					Layout.columnSpan: 2
+				}
 				TemplateLabel {
 					text: qsTr("Display")
 					font.pointSize: subsurfaceTheme.headingPointSize
@@ -588,25 +599,76 @@ TemplatePage {
 				TemplateLabel {
 					text: qsTr("Show only one column in Portrait mode")
 					Layout.fillWidth: true
-					//Layout.preferredWidth: gridWidth * 0.75
 				}
 				SsrfSwitch {
 					id: singleColumnButton
 					checked: PrefDisplay.singleColumnPortrait
-					//Layout.preferredWidth: gridWidth * 0.25
 					onClicked: {
 						PrefDisplay.singleColumnPortrait = checked
 					}
 				}
-			}
-			TemplateLine {
-				visible: sectionAdvanced.isExpanded
-			}
-			GridLayout {
-				id: developer
-				visible: sectionAdvanced.isExpanded
-				width: parent.width
-				columns: 2
+				TemplateLine {
+					visible: sectionAdvanced.isExpanded
+					Layout.columnSpan: 2
+				}
+				TemplateLabel {
+					text: qsTr("Profile deco ceiling")
+					font.pointSize: subsurfaceTheme.headingPointSize
+					font.weight: Font.Light
+					Layout.topMargin: Kirigami.Units.largeSpacing
+					Layout.bottomMargin: Kirigami.Units.largeSpacing / 2
+					Layout.columnSpan: 2
+				}
+				TemplateLabel {
+					text: qsTr("Show DC reported ceiling")
+				}
+				SsrfSwitch {
+					checked: PrefTechnicalDetails.dcceiling
+					onClicked: {
+						PrefTechnicalDetails.dcceiling = checked
+						rootItem.settingsChanged()
+					}
+				}
+				TemplateLabel {
+					text: qsTr("Show calculated ceiling")
+				}
+				SsrfSwitch {
+					checked: PrefTechnicalDetails.calcceiling
+					onClicked: {
+						PrefTechnicalDetails.calcceiling = checked
+						rootItem.settingsChanged()
+					}
+				}
+				TemplateLabel {
+					text: qsTr("GFLow")
+				}
+				TemplateTextField {
+					id: gfLow
+					Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+					text: PrefTechnicalDetails.gflow
+					inputMask: "99"
+					onEditingFinished: {
+						PrefTechnicalDetails.gflow = gfLow.text
+						rootItem.settingsChanged()
+					}
+				}
+				TemplateLabel {
+					text: qsTr("GFHigh")
+				}
+				TemplateTextField {
+					id: gfHigh
+					Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+					text: PrefTechnicalDetails.gfhigh
+					inputMask: "99"
+					onEditingFinished: {
+						PrefTechnicalDetails.gfhigh = gfHigh.text
+						rootItem.settingsChanged()
+					}
+				}
+				TemplateLine {
+					visible: sectionAdvanced.isExpanded
+					Layout.columnSpan: 2
+				}
 				TemplateLabel {
 					text: qsTr("Developer")
 					font.pointSize: subsurfaceTheme.headingPointSize
@@ -618,12 +680,10 @@ TemplatePage {
 				TemplateLabel {
 					text: qsTr("Display Developer menu")
 					Layout.fillWidth: true
-					//Layout.preferredWidth: gridWidth * 0.75
 				}
 				SsrfSwitch {
 					id: developerButton
 					checked: PrefDisplay.show_developer
-					//sLayout.preferredWidth: gridWidth * 0.25
 					onClicked: {
 						PrefDisplay.show_developer = checked
 					}

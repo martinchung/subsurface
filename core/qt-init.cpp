@@ -4,6 +4,7 @@
 #include <QNetworkProxy>
 #include <QLibraryInfo>
 #include <QTextCodec>
+#include <QTranslator>
 #include "qthelper.h"
 #include "errorhelper.h"
 #include "core/settings/qPref.h"
@@ -79,18 +80,27 @@ void init_qt_late()
 	QLocale::setDefault(loc);
 
 	QString translationLocation;
-#if defined(Q_OS_ANDROID)
-	translationLocation = QLatin1String("assets:/translations");
-#elif defined(Q_OS_IOS)
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
 	translationLocation = QLatin1String(":/");
 #else
 	translationLocation = QLibraryInfo::location(QLibraryInfo::TranslationsPath);
 #endif
-	if (qtTranslator.load(loc, "qt", "_", translationLocation)) {
-		application->installTranslator(&qtTranslator);
-	} else {
-		if (verbose && uiLang != "en_US" && uiLang != "en-US")
-			qDebug() << "can't find Qt localization for locale" << uiLang << "searching in" << translationLocation;
+	if (uiLang != "en_US" && uiLang != "en-US") {
+		if (qtTranslator.load(loc, "qtbase", "_", translationLocation) ||
+		    qtTranslator.load(loc, "qtbase", "_", getSubsurfaceDataPath("translations")) ||
+		    qtTranslator.load(loc, "qtbase", "_", getSubsurfaceDataPath("../translations"))) {
+			application->installTranslator(&qtTranslator);
+		} else {
+			// it's possible that this is one of the couple of languages that still have qt_XX translations
+			// and no qtbase_XX translations - as of this writing this is true for Swedish and Portuguese
+			if (qtTranslator.load(loc, "qt", "_", translationLocation) ||
+			    qtTranslator.load(loc, "qt", "_", getSubsurfaceDataPath("translations")) ||
+			    qtTranslator.load(loc, "qt", "_", getSubsurfaceDataPath("../translations"))) {
+				application->installTranslator(&qtTranslator);
+			} else {
+				qDebug() << "can't find Qt base localization for locale" << uiLang << "searching in" << translationLocation;
+			}
+		}
 	}
 	if (ssrfTranslator.load(loc, "subsurface", "_") ||
 	    ssrfTranslator.load(loc, "subsurface", "_", translationLocation) ||

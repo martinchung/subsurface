@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include "command.h"
+#include "command_device.h"
 #include "command_divelist.h"
 #include "command_divesite.h"
 #include "command_edit.h"
 #include "command_edit_trip.h"
 #include "command_event.h"
+#include "command_filter.h"
 #include "command_pictures.h"
 
 namespace Command {
@@ -16,9 +18,11 @@ void addDive(dive *d, bool autogroup, bool newNumber)
 	execute(new AddDive(d, autogroup, newNumber));
 }
 
-void importDives(struct dive_table *dives, struct trip_table *trips, struct dive_site_table *sites, int flags, const QString &source)
+void importDives(struct dive_table *dives, struct trip_table *trips, struct dive_site_table *sites,
+		 struct device_table *devices, struct filter_preset_table *presets,
+		 int flags, const QString &source)
 {
-	execute(new ImportDives(dives, trips, sites, flags, source));
+	execute(new ImportDives(dives, trips, sites, devices, presets, flags, source));
 }
 
 void deleteDive(const QVector<struct dive*> &divesToDelete)
@@ -375,6 +379,31 @@ void removePictures(const std::vector<PictureListForDeletion> &pictures)
 void addPictures(const std::vector<PictureListForAddition> &pictures)
 {
 	execute(new AddPictures(pictures));
+}
+
+void removeDevice(int idx)
+{
+	execute(new RemoveDevice(idx));
+}
+
+void editDeviceNickname(int idx, const QString &nickname)
+{
+	execute(new EditDeviceNickname(idx, nickname));
+}
+
+void createFilterPreset(const QString &name, const FilterData &data)
+{
+	execute(new CreateFilterPreset(name, data));
+}
+
+void removeFilterPreset(int index)
+{
+	execute(new RemoveFilterPreset(index));
+}
+
+void editFilterPreset(int index, const FilterData &data)
+{
+	execute(new EditFilterPreset(index, data));
 }
 
 } // namespace Command

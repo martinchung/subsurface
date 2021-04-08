@@ -33,7 +33,7 @@ signals:
 	void divesSelected();
 public
 slots:
-	void reloadHeaderActions();
+	void settingsChanged();
 private
 slots:
 	void toggleColumnVisibilityByIndex();
@@ -50,6 +50,7 @@ slots:
 	void mergeDives();
 	void splitDives();
 	void renumberDives();
+	void addDivesToTrip();
 	void shiftTimes();
 	void diveSelectionChanged(const QVector<QModelIndex> &indices);
 	void currentDiveChanged(QModelIndex index);

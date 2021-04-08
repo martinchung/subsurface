@@ -155,12 +155,7 @@ void EditBase<T>::undo()
 
 	// Send signals.
 	DiveField id = fieldId();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-	emit diveListNotifier.divesChanged(QVector<dive *>(dives.begin(), dives.end()), id);
-#else
-	emit diveListNotifier.divesChanged(QVector<dive *>::fromStdVector(dives), id);
-#endif
-
+	emit diveListNotifier.divesChanged(stdToQt<dive *>(dives), id);
 	setSelection(selectedDives, current);
 }
 
@@ -551,11 +546,7 @@ void EditTagsBase::undo()
 
 	// Send signals.
 	DiveField id = fieldId();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-	emit diveListNotifier.divesChanged(QVector<dive *>(dives.begin(), dives.end()), id);
-#else
-	emit diveListNotifier.divesChanged(QVector<dive *>::fromStdVector(dives), id);
-#endif
+	emit diveListNotifier.divesChanged(stdToQt<dive *>(dives), id);
 	setSelection(selectedDives, current);
 }
 
@@ -668,7 +659,7 @@ PasteState::PasteState(dive *dIn, const dive *data, dive_components what) : d(dI
 		// 2) For cylinders that do not yet exist in the destination dive, we set the pressures to 0, i.e. unset.
 		//    Moreover, for these we set the manually_added flag, because they weren't downloaded from a DC.
 		for (int i = 0; i < d->cylinders.nr && i < cylinders.nr; ++i) {
-			const cylinder_t &src = d->cylinders.cylinders[i];
+			const cylinder_t &src = *get_cylinder(d, i);
 			cylinder_t &dst = cylinders.cylinders[i];
 			dst.gasmix = src.gasmix;
 			dst.start = src.start;
@@ -847,6 +838,7 @@ void ReplanDive::undo()
 	std::swap(d->duration, duration);
 	std::swap(d->salinity, salinity);
 	fixup_dive(d);
+	invalidate_dive_cache(d); // Ensure that dive is written in git_save()
 
 	QVector<dive *> divesToNotify = { d };
 	// Note that we have to emit cylindersReset before divesChanged, because the divesChanged
@@ -884,6 +876,7 @@ void AddWeight::undo()
 			continue;
 		remove_weightsystem(d, d->weightsystems.nr - 1);
 		emit diveListNotifier.weightRemoved(d, d->weightsystems.nr);
+		invalidate_dive_cache(d); // Ensure that dive is written in git_save()
 	}
 }
 
@@ -892,6 +885,7 @@ void AddWeight::redo()
 	for (dive *d: dives) {
 		add_cloned_weightsystem(&d->weightsystems, empty_weightsystem);
 		emit diveListNotifier.weightAdded(d, d->weightsystems.nr - 1);
+		invalidate_dive_cache(d); // Ensure that dive is written in git_save()
 	}
 }
 
@@ -963,6 +957,7 @@ void RemoveWeight::undo()
 	for (size_t i = 0; i < dives.size(); ++i) {
 		add_to_weightsystem_table(&dives[i]->weightsystems, indices[i], clone_weightsystem(ws));
 		emit diveListNotifier.weightAdded(dives[i], indices[i]);
+		invalidate_dive_cache(dives[i]); // Ensure that dive is written in git_save()
 	}
 }
 
@@ -971,6 +966,7 @@ void RemoveWeight::redo()
 	for (size_t i = 0; i < dives.size(); ++i) {
 		remove_weightsystem(dives[i], indices[i]);
 		emit diveListNotifier.weightRemoved(dives[i], indices[i]);
+		invalidate_dive_cache(dives[i]); // Ensure that dive is written in git_save()
 	}
 }
 
@@ -1021,6 +1017,7 @@ void EditWeight::redo()
 	for (size_t i = 0; i < dives.size(); ++i) {
 		set_weightsystem(dives[i], indices[i], new_ws);
 		emit diveListNotifier.weightEdited(dives[i], indices[i]);
+		invalidate_dive_cache(dives[i]); // Ensure that dive is written in git_save()
 	}
 	std::swap(ws, new_ws);
 }
@@ -1039,9 +1036,9 @@ AddCylinder::AddCylinder(bool currentDiveOnly) :
 	if (dives.empty())
 		return;
 	else if (dives.size() == 1)
-		setText(tr("Add cylinder"));
+		setText(Command::Base::tr("Add cylinder"));
 	else
-		setText(tr("Add cylinder (%n dive(s))", "", dives.size()));
+		setText(Command::Base::tr("Add cylinder (%n dive(s))", "", dives.size()));
 	cyl = create_new_cylinder(dives[0]);
 }
 
@@ -1112,7 +1109,7 @@ static bool same_cylinder_with_flags(const cylinder_t &cyl1, const cylinder_t &c
 static int find_cylinder_index(const struct dive *d, const cylinder_t &cyl, int sameCylinderFlags)
 {
 	for (int idx = 0; idx < d->cylinders.nr; ++idx) {
-		if (same_cylinder_with_flags(cyl, d->cylinders.cylinders[idx], sameCylinderFlags))
+		if (same_cylinder_with_flags(cyl, *get_cylinder(d, idx), sameCylinderFlags))
 			return idx;
 	}
 	return -1;
@@ -1126,7 +1123,7 @@ EditCylinderBase::EditCylinderBase(int index, bool currentDiveOnly, bool nonProt
 		dives.clear();
 		return;
 	}
-	const cylinder_t &orig = current->cylinders.cylinders[index];
+	const cylinder_t &orig = *get_cylinder(current, index);
 
 	std::vector<dive *> divesNew;
 	divesNew.reserve(dives.size());
@@ -1139,7 +1136,7 @@ EditCylinderBase::EditCylinderBase(int index, bool currentDiveOnly, bool nonProt
 			continue;
 		divesNew.push_back(d);
 		indexes.push_back(idx);
-		cyl.push_back(clone_cylinder(d->cylinders.cylinders[idx]));
+		cyl.push_back(clone_cylinder(*get_cylinder(d, idx)));
 	}
 	dives = std::move(divesNew);
 }
@@ -1160,9 +1157,9 @@ RemoveCylinder::RemoveCylinder(int index, bool currentDiveOnly) :
 	EditCylinderBase(index, currentDiveOnly, true, SAME_TYPE | SAME_PRESS | SAME_GAS)
 {
 	if (dives.size() == 1)
-		setText(tr("Remove cylinder"));
+		setText(Command::Base::tr("Remove cylinder"));
 	else
-		setText(tr("Remove cylinder (%n dive(s))", "", dives.size()));
+		setText(Command::Base::tr("Remove cylinder (%n dive(s))", "", dives.size()));
 }
 
 void RemoveCylinder::undo()
@@ -1210,15 +1207,15 @@ EditCylinder::EditCylinder(int index, cylinder_t cylIn, EditCylinderType typeIn,
 		return;
 
 	if (dives.size() == 1)
-		setText(tr("Edit cylinder"));
+		setText(Command::Base::tr("Edit cylinder"));
 	else
-		setText(tr("Edit cylinder (%n dive(s))", "", dives.size()));
+		setText(Command::Base::tr("Edit cylinder (%n dive(s))", "", dives.size()));
 
 	// Try to untranslate the cylinder type
 	QString description = cylIn.type.description;
-	for (int i = 0; i < MAX_TANK_INFO && tank_info[i].name; ++i) {
-		if (gettextFromC::tr(tank_info[i].name) == description) {
-			description = tank_info[i].name;
+	for (int i = 0; i < tank_info_table.nr; ++i) {
+		if (gettextFromC::tr(tank_info_table.infos[i].name) == description) {
+			description = tank_info_table.infos[i].name;
 			break;
 		}
 	}
@@ -1250,6 +1247,7 @@ EditCylinder::EditCylinder(int index, cylinder_t cylIn, EditCylinderType typeIn,
 			cyl[i].gasmix = cylIn.gasmix;
 			cyl[i].bestmix_o2 = cylIn.bestmix_o2;
 			cyl[i].bestmix_he = cylIn.bestmix_he;
+			sanitize_gasmix(&cyl[i].gasmix);
 			break;
 		}
 	}
@@ -1258,7 +1256,7 @@ EditCylinder::EditCylinder(int index, cylinder_t cylIn, EditCylinderType typeIn,
 void EditCylinder::redo()
 {
 	for (size_t i = 0; i < dives.size(); ++i) {
-		std::swap(dives[i]->cylinders.cylinders[indexes[i]], cyl[i]);
+		std::swap(*get_cylinder(dives[i], indexes[i]), cyl[i]);
 		update_cylinder_related_info(dives[i]);
 		emit diveListNotifier.cylinderEdited(dives[i], indexes[i]);
 		invalidate_dive_cache(dives[i]); // Ensure that dive is written in git_save()

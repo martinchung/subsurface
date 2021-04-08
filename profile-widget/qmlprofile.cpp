@@ -16,15 +16,16 @@ QMLProfile::QMLProfile(QQuickItem *parent) :
 	m_margin(0),
 	m_xOffset(0.0),
 	m_yOffset(0.0),
-	m_profileWidget(new ProfileWidget2)
+	m_profileWidget(new ProfileWidget2(nullptr, nullptr))
 {
 	setAntialiasing(true);
 	setFlags(QQuickItem::ItemClipsChildrenToShape | QQuickItem::ItemHasContents );
-	m_profileWidget->setProfileState();
+	m_profileWidget->setProfileState(nullptr, 0);
 	m_profileWidget->setPrintMode(true);
 	m_profileWidget->setFontPrintScale(fontScale);
 	connect(QMLManager::instance(), &QMLManager::sendScreenChanged, this, &QMLProfile::screenChanged);
 	connect(this, &QMLProfile::scaleChanged, this, &QMLProfile::triggerUpdate);
+	connect(&diveListNotifier, &DiveListNotifier::divesChanged, this, &QMLProfile::divesChanged);
 	setDevicePixelRatio(QMLManager::instance()->lastDevicePixelRatio());
 }
 
@@ -134,7 +135,7 @@ void QMLProfile::updateProfile()
 		return;
 	if (verbose)
 		qDebug() << "update profile for dive #" << d->number << "offeset" << QString::number(m_xOffset, 'f', 1) << "/" << QString::number(m_yOffset, 'f', 1);
-	m_profileWidget->plotDive(d, true);
+	m_profileWidget->plotDive(d, dc_number, true);
 }
 
 void QMLProfile::setDiveId(int diveId)
@@ -181,4 +182,16 @@ void QMLProfile::setYOffset(qreal value)
 void QMLProfile::screenChanged(QScreen *screen)
 {
 	setDevicePixelRatio(screen->devicePixelRatio());
+}
+
+void QMLProfile::divesChanged(const QVector<dive *> &dives, DiveField)
+{
+	for (struct dive *d: dives) {
+		if (d->id == m_diveId) {
+			qDebug() << "dive #" << d->number << "changed, trigger profile update";
+			m_profileWidget->plotDive(d, dc_number, true);
+			triggerUpdate();
+			return;
+		}
+	}
 }

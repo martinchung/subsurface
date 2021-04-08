@@ -219,7 +219,7 @@ void LocationInformationWidget::acceptChanges()
 
 	MainWindow::instance()->diveList->setEnabled(true);
 	MainWindow::instance()->setEnabledToolbar(true);
-	MainWindow::instance()->setApplicationState(ApplicationState::Default);
+	MainWindow::instance()->setApplicationState(MainWindow::ApplicationState::Default);
 	DiveFilter::instance()->stopFilterDiveSites();
 
 	// Subtlety alert: diveSite must be cleared *after* exiting the dive-site mode.
@@ -313,12 +313,17 @@ void LocationInformationWidget::on_diveSiteDistance_textChanged(const QString &s
 
 void LocationInformationWidget::reverseGeocode()
 {
+	dive_site *ds = diveSite; /* Save local copy; possibility of user closing the widget while reverseGeoLookup is running (see #2930) */
 	location_t location = parseGpsText(ui.diveSiteCoordinates->text());
-	if (!diveSite || !has_location(&location))
+	if (!ds || !has_location(&location))
 		return;
-	taxonomy_data taxonomy = { 0, 0 };
-	reverseGeoLookup(location.lat, location.lon, &taxonomy);
-	Command::editDiveSiteTaxonomy(diveSite, taxonomy);
+	taxonomy_data taxonomy = reverseGeoLookup(location.lat, location.lon);
+	if (ds != diveSite) {
+		free_taxonomy(&taxonomy);
+		return;
+	}
+	// This call transfers ownership of the taxonomy memory into an EditDiveSiteTaxonomy object
+	Command::editDiveSiteTaxonomy(ds, taxonomy);
 }
 
 DiveLocationFilterProxyModel::DiveLocationFilterProxyModel(QObject *) : currentLocation(zero_location)

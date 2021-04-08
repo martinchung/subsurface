@@ -29,13 +29,15 @@ MACRO_ENSURE_OUT_OF_SOURCE_BUILD(
     "We don't support building in source, please create a build folder elsewhere and remember to run git clean -xdf to remove temporary files created by CMake."
 )
 
+#Option for memory debugging
+option(SUBSURFACE_ASAN_BUILD "enable memory debugging of Subsurface binary" OFF)
+
 #Option for profiling
 option(SUBSURFACE_PROFILING_BUILD "enable profiling of Subsurface binary" OFF)
 
 #Options regarding usage of pkgconfig
 option(LIBGIT2_FROM_PKGCONFIG "use pkg-config to retrieve libgit2" OFF)
 option(LIBDC_FROM_PKGCONFIG "use pkg-config to retrieve libdivecomputer" OFF)
-option(LIBGRANTLEE_FROM_PKGCONFIG "use pkg-config to retrieve grantlee" OFF)
 
 #Library Handling
 option(FORCE_LIBSSH "force linking with libssh to workaround libgit2 bug" ON)
@@ -53,8 +55,8 @@ option(FTDISUPPORT "enable support for libftdi based serial" OFF)
 # Options regarding What should we build on subsurface
 option(MAKE_TESTS "Make the tests" ON)
 
-SET(SUBSURFACE_TARGET_EXECUTABLE "DesktopExecutable" CACHE STRING "The type of application, DesktopExecutable or MobileExecutable")
-LIST(APPEND SUBSURFACE_ACCEPTED_EXECUTABLES  "DesktopExecutable" "MobileExecutable")
+SET(SUBSURFACE_TARGET_EXECUTABLE "DesktopExecutable" CACHE STRING "The type of application, DesktopExecutable, MobileExecutable, or DownloaderExecutable")
+LIST(APPEND SUBSURFACE_ACCEPTED_EXECUTABLES  "DesktopExecutable" "MobileExecutable" "DownloaderExecutable")
 SET_PROPERTY(CACHE SUBSURFACE_TARGET_EXECUTABLE PROPERTY STRINGS ${SUBSURFACE_ACCEPTED_EXECUTABLES})
 
 #verify if Platform is correct and warn on wxit with example.
@@ -74,7 +76,7 @@ add_definitions(-DSUBSURFACE_SOURCE="${SUBSURFACE_SOURCE}")
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED TRUE)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 #
@@ -111,6 +113,11 @@ if (SUBSURFACE_PROFILING_BUILD)
 	SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pg")
 	SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -pg")
 endif()
+# set up ASan
+if (SUBSURFACE_ASAN_BUILD)
+	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+	SET(CMAKE_C_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+endif()
 
 # every compiler understands -Wall
 set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
@@ -135,7 +142,6 @@ include(pkgconfig_helper)
 include(HandleFindGit2)
 include(HandleFindLibDiveComputer)
 if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
-        include(HandleFindGrantlee)
 	include(HandleUserManual)
 endif()
 include(HandleFtdiSupport)
@@ -154,7 +160,11 @@ endif()
 pkg_config_library(LIBZIP libzip REQUIRED)
 
 if(NOT ANDROID)
+	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+		pkg_config_library(BLUEZ bluez REQUIRED)
+	endif()
 	pkg_config_library(LIBUSB libusb-1.0 QUIET)
+	pkg_config_library(LIBMTP libmtp QUIET)
 endif()
 
 include_directories(.
@@ -174,6 +184,15 @@ if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
 	endif()
 	list(APPEND QT_EXTRA_COMPONENTS QuickWidgets)
 	remove_definitions(-DSUBSURFACE_MOBILE)
+	if(NO_PRINTING)
+		message(STATUS "building without printing support")
+		add_definitions(-DNO_PRINTING)
+	else()
+		LIST(APPEND QT_EXTRA_COMPONENTS PrintSupport)
+		# Because Qt5WebKitWidgets isn't a part of the "regular" Qt5, we can't get it the normal way
+		find_package(Qt5WebKitWidgets REQUIRED)
+		set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} Qt5::WebKitWidgets)
+	endif()
 elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 	if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 		set(SUBSURFACE_TARGET Subsurface-mobile)
@@ -181,6 +200,7 @@ elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 		set(SUBSURFACE_TARGET subsurface-mobile)
 	endif()
 	list(APPEND QT_EXTRA_COMPONENTS QuickControls2)
+	list(APPEND QT_EXTRA_COMPONENTS QuickWidgets)
 	add_definitions(-DSUBSURFACE_MOBILE)
 
 	# add definition to seperate mobile for devices and for desktop
@@ -188,6 +208,15 @@ elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 
 	message(STATUS "Building Subsurface-mobile requires BT support")
 	set(BTSUPPORT ON)
+elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
+	if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+                set(SUBSURFACE_TARGET Subsurface-downloader)
+        else()
+                set(SUBSURFACE_TARGET subsurface-downloader)
+        endif()
+	set(BTSUPPORT ON)
+	add_definitions(-DSUBSURFACE_DOWNLOADER)
+	message(STATUS "building the embedded Subsurface-downloader app")
 endif()
 
 if(ANDROID)
@@ -197,31 +226,30 @@ if(ANDROID)
 	list(APPEND QT_EXTRA_COMPONENTS AndroidExtras)
 	set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -llog)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # add pthread to the end of the library list on Linux
-        # this is only needed on Ubuntu
-        # but shouldn't hurt on other Linux versions
-        # in some builds we appear to be missing libz for some strange reason...
-	# Add ssh2 at the end for openSUSE builds (for recent cmake?)
-        set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lssh2 -lz -lpthread)
+	# add pthread to the end of the library list on Linux
+	# this is only needed on Ubuntu
+	# but shouldn't hurt on other Linux versions
+	# in some builds we appear to be missing libz for some strange reason...
+	set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lz -lpthread)
 
-        # Test for ARM processor (Raspberry Pi) and add libGLESv2 if found
-        if (CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7l" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "armv6l")
-                message (STATUS "Found ARM processor. Adding libGLESv2")
-                set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lGLESv2)
-                set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-        endif()
+	# Test for ARM processor (Raspberry Pi) and add libGLESv2 if found
+	if (CMAKE_SYSTEM_PROCESSOR STREQUAL "armv7l" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "armv6l")
+		message (STATUS "Found ARM processor. Adding libGLESv2")
+		set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lGLESv2)
+		set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+	endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        execute_process(
-                COMMAND sh scripts/get-version linux
-                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                OUTPUT_VARIABLE SSRF_VERSION_STRING
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        find_library(APP_SERVICES_LIBRARY ApplicationServices)
-        find_library(HID_LIB HidApi)
-        set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} ${HID_LIB})
-        set(EXTRA_LIBS ${APP_SERVICES_LIBRARY})
-        set(ICON_FILE ${CMAKE_SOURCE_DIR}/packaging/macosx/Subsurface.icns)
+	execute_process(
+		COMMAND sh scripts/get-version linux
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+		OUTPUT_VARIABLE SSRF_VERSION_STRING
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+	)
+	find_library(APP_SERVICES_LIBRARY ApplicationServices)
+	find_library(HID_LIB HidApi)
+	set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} ${HID_LIB})
+	set(EXTRA_LIBS ${APP_SERVICES_LIBRARY})
+	set(ICON_FILE ${CMAKE_SOURCE_DIR}/packaging/macosx/Subsurface.icns)
 	if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 		set(MACOSX_BUNDLE_INFO_STRING "Subsurface-mobile")
 		set(MACOSX_BUNDLE_BUNDLE_NAME "Subsurface-mobile")
@@ -231,16 +259,16 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	endif()
 	set(MACOSX_BUNDLE_ICON_FILE Subsurface.icns)
 	set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.subsurface-divelog")
-        set(MACOSX_BUNDLE_BUNDLE_VERSION "${SSRF_VERSION_STRING}")
-        set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${SSRF_VERSION_STRING}")
-        set(MACOSX_BUNDLE_LONG_VERSION_STRING "${SSRF_VERSION_STRING}")
-        set(MACOSX_BUNDLE_COPYRIGHT "Linus Torvalds, Dirk Hohndel, Tomaz Canabrava, Berthold Stoeger and others")
-        set_source_files_properties(${ICON_FILE} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-        set(SUBSURFACE_PKG MACOSX_BUNDLE ${ICON_FILE})
+	set(MACOSX_BUNDLE_BUNDLE_VERSION "${SSRF_VERSION_STRING}")
+	set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${SSRF_VERSION_STRING}")
+	set(MACOSX_BUNDLE_LONG_VERSION_STRING "${SSRF_VERSION_STRING}")
+	set(MACOSX_BUNDLE_COPYRIGHT "Linus Torvalds, Dirk Hohndel, Tomaz Canabrava, Berthold Stoeger and others")
+	set_source_files_properties(${ICON_FILE} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+	set(SUBSURFACE_PKG MACOSX_BUNDLE ${ICON_FILE})
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lwsock32 -lws2_32)
-        remove_definitions(-DUNICODE)
-        add_definitions(-mwindows -D_WIN32)
+	set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} -lwsock32 -lws2_32)
+	remove_definitions(-DUNICODE)
+	add_definitions(-mwindows -D_WIN32)
 endif()
 
 if(BTSUPPORT)
@@ -259,13 +287,17 @@ endif()
 set(QT_FIND_COMPONENTS Core Concurrent Widgets Network Svg Positioning Quick Location ${QT_EXTRA_COMPONENTS})
 if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
 	find_package(Qt5 5.9.1 REQUIRED COMPONENTS ${QT_FIND_COMPONENTS} LinguistTools Test QuickTest)
-else()
+elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 	# Kirigami 5.62 and newer require at least Qt 5.12
 	if(ANDROID)
 		find_package(Qt5 5.12 REQUIRED COMPONENTS ${QT_FIND_COMPONENTS} LinguistTools)
 	else()
 		find_package(Qt5 5.12 REQUIRED COMPONENTS ${QT_FIND_COMPONENTS} LinguistTools Test QuickTest)
 	endif()
+elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
+	# let's pick a version that's not ancient
+	find_package(Qt5 5.11 REQUIRED COMPONENTS ${QT_FIND_COMPONENTS})
+	set(MAKE_TESTS OFF)
 endif()
 foreach(_QT_COMPONENT ${QT_FIND_COMPONENTS})
 	list(APPEND QT_LIBRARIES Qt5::${_QT_COMPONENT})
@@ -275,8 +307,10 @@ if(NOT ANDROID)
 endif()
 
 #set up the subsurface_link_libraries variable
-set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} ${LIBDIVECOMPUTER_LIBRARIES} ${LIBGIT2_LIBRARIES} ${LIBUSB_LIBRARIES})
-qt5_add_resources(SUBSURFACE_RESOURCES subsurface.qrc map-widget/qml/map-widget.qrc)
+set(SUBSURFACE_LINK_LIBRARIES ${SUBSURFACE_LINK_LIBRARIES} ${LIBDIVECOMPUTER_LIBRARIES} ${LIBGIT2_LIBRARIES} ${LIBUSB_LIBRARIES} ${LIBMTP_LIBRARIES})
+if (NOT SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
+	qt5_add_resources(SUBSURFACE_RESOURCES subsurface.qrc stats/statsicons.qrc map-widget/qml/map-widget.qrc desktop-widgets/qml/statsview2.qrc)
+endif()
 
 # hack to build successfully on LGTM
 if(DEFINED ENV{LGTM_SRC})
@@ -284,13 +318,18 @@ if(DEFINED ENV{LGTM_SRC})
 endif()
 
 # include translations
+if (NOT SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
 add_subdirectory(translations)
+endif()
 add_subdirectory(core)
 add_subdirectory(qt-models)
 add_subdirectory(commands)
+if (NOT SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
 add_subdirectory(profile-widget)
 add_subdirectory(map-widget)
 add_subdirectory(mobile-widgets)
+add_subdirectory(stats)
+endif()
 add_subdirectory(backend-shared)
 
 if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
@@ -299,25 +338,31 @@ endif()
 
 # create the executables
 if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
+	# set up Kirigami using KDE ECM
+	# that's available as kde-extra-cmake-modules on Homebrew, on all Linux flavors
+	# Android and iOS are built via qmake, Windows build of Subsurface-mobile isn't supported
+	find_package(ECM REQUIRED CONFIG PATHS ${CMAKE_CURRENT_SOURCE_DIR}/mobile-widgets/3rdparty/ECM)
+	set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ ${CMAKE_MODULE_PATH} ${ECM_MODULE_PATH})
+	set(BREEZEICONS_DIR mobile-widgets/3rdparty/breeze-icons/)
+
+	SET(QML_IMPORT_PATH ${QML_IMPORT_PATH} ${CMAKE_SOURCE_DIR}/mobile-widgets/3rdparty/kirigami/src ${CMAKE_SOURCE_DIR}/mobile-widgets/qml)
+	add_subdirectory(mobile-widgets/3rdparty)
+	include_directories(${CMAKE_SOURCE_DIR}/mobile-widgets/3rdparty/kirigami/src)
+	include(${CMAKE_SOURCE_DIR}/mobile-widgets/3rdparty/kirigami/KF5Kirigami2Macros.cmake)
+
 	set(MOBILE_SRC
 		subsurface-mobile-main.cpp
 		subsurface-helper.cpp
 	)
-	include_directories(${CMAKE_SOURCE_DIR}/mobile-widgets/qml/kirigami/src/libkirigami)
-	add_definitions(-DKIRIGAMI_BUILD_TYPE_STATIC)
 	qt5_add_resources(MOBILE_RESOURCES mobile-widgets/qml/mobile-resources.qrc)
-	qt5_add_resources(MOBILE_RESOURCES mobile-widgets/qml/kirigami/kirigami.qrc)
-	# When building the mobile application in Android, link it and Qt will do the rest, when doing the mobile application on Desktop, create an executable.
-	if(ANDROID)
-		qt5_add_resources(MOBILE_RESOURCES android-mobile/font.qrc)
-		add_library(${SUBSURFACE_TARGET} SHARED ${SUBSURFACE_PKG} ${MOBILE_SRC} ${SUBSURFACE_RESOURCES} ${MOBILE_RESOURCES})
-	else()
-		# the following is split across two commands since in cmake 3.12 this would result
-		# in a non-sensical "no sources given to target" error if done all as one set of
-		# arguments to the add_executable() call
-		add_executable(${SUBSURFACE_TARGET} ${SUBSURFACE_PKG} ${SUBSURFACE_RESOURCES})
-		target_sources(${SUBSURFACE_TARGET} PUBLIC ${MOBILE_SRC} ${MOBILE_RESOURCES})
-	endif()
+	qt5_add_resources(MOBILE_RESOURCES mobile-widgets/3rdparty/icons.qrc)
+	qt5_add_resources(MOBILE_RESOURCES mobile-widgets/3rdparty/kirigami/src/scenegraph/shaders/shaders.qrc)
+
+	# the following is split across two commands since in cmake 3.12 this would result
+	# in a non-sensical "no sources given to target" error if done all as one set of
+	# arguments to the add_executable() call
+	add_executable(${SUBSURFACE_TARGET} ${SUBSURFACE_PKG} ${SUBSURFACE_RESOURCES})
+	target_sources(${SUBSURFACE_TARGET} PUBLIC ${MOBILE_SRC} ${MOBILE_RESOURCES})
 	target_link_libraries(
 		${SUBSURFACE_TARGET}
 		subsurface_mobile
@@ -327,6 +372,8 @@ if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 		subsurface_models_mobile
 		subsurface_commands
 		subsurface_corelib
+		subsurface_stats
+		kirigamiplugin
 		${SUBSURFACE_LINK_LIBRARIES}
 	)
 elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
@@ -335,11 +382,11 @@ elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
 		subsurface-helper.cpp
 	)
 	source_group("Subsurface App" FILES ${SUBSURFACE_APP})
-        if(ANDROID)
-                add_library(${SUBSURFACE_TARGET} SHARED ${SUBSURFACE_PKG} ${SUBSURFACE_APP} ${SUBSURFACE_RESOURCES})
-        else()
-                add_executable(${SUBSURFACE_TARGET} MACOSX_BUNDLE WIN32 ${SUBSURFACE_PKG} ${SUBSURFACE_APP} ${SUBSURFACE_RESOURCES})
-        endif()
+	if(ANDROID)
+		add_library(${SUBSURFACE_TARGET} SHARED ${SUBSURFACE_PKG} ${SUBSURFACE_APP} ${SUBSURFACE_RESOURCES})
+	else()
+		add_executable(${SUBSURFACE_TARGET} MACOSX_BUNDLE WIN32 ${SUBSURFACE_PKG} ${SUBSURFACE_APP} ${SUBSURFACE_RESOURCES})
+	endif()
 
 	target_link_libraries(
 		${SUBSURFACE_TARGET}
@@ -352,6 +399,7 @@ elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
 		subsurface_models_desktop
 		subsurface_commands
 		subsurface_corelib
+		subsurface_stats
 		${SUBSURFACE_LINK_LIBRARIES}
 	)
 	add_dependencies(subsurface_desktop_preferences subsurface_generated_ui)
@@ -360,6 +408,21 @@ elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable")
 	add_dependencies(subsurface_profile subsurface_generated_ui)
 	add_dependencies(subsurface_models_desktop subsurface_generated_ui)
 	add_dependencies(subsurface_generated_ui version)
+elseif (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DownloaderExecutable")
+	set(DOWNLOADER_APP
+		subsurface-downloader-main.cpp
+		cli-downloader.cpp
+	)
+	source_group("Downloader App" FILES ${DOWNLOADER_APP})
+	add_executable(${SUBSURFACE_TARGET} MACOSX_BUNDLE WIN32 ${SUBSURFACE_PKG} ${DOWNLOADER_APP} ${SUBSURFACE_RESOURCES})
+	target_link_libraries(
+		${SUBSURFACE_TARGET}
+		subsurface_backend_shared
+		subsurface_models_downloader
+		subsurface_commands
+		subsurface_corelib
+		${SUBSURFACE_LINK_LIBRARIES}
+	)
 endif()
 
 add_dependencies(subsurface_corelib version)
@@ -418,8 +481,10 @@ if(ANDROID)
 	endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	set(APP_BUNDLE_DIR "${SUBSURFACE_TARGET}.app")
-	set(EXTRA_MACDEPLOY_ARGS "-qmldir=${APP_BUNDLE_DIR}/Contents/Resources/qml ")
-	set(MACDEPLOY_ARGS "${EXTRA_MACDEPLOY_ARGS}-executable=${APP_BUNDLE_DIR}/Contents/MacOS/${SUBSURFACE_TARGET} -always-overwrite -libpath=${CMAKE_SOURCE_DIR}/../install-root/lib")
+	# macdeployqt simplifies a lot of this process, but still doesn't get everything right
+	# - it misses a couple of resources and frameworks
+	# - it seems to always deploy the SQL plugins (even though they aren't needed)
+	set(MACDEPLOY_ARGS "-qmldir=${APP_BUNDLE_DIR}/Contents/Resources/qml -appstore-compliant -verbose=0 -executable=${APP_BUNDLE_DIR}/Contents/MacOS/${SUBSURFACE_TARGET} -always-overwrite -libpath=${CMAKE_SOURCE_DIR}/../install-root/lib")
 	set(RESOURCEDIR ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources)
 	set(PLUGINDIR ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/PlugIns)
 	install(DIRECTORY Documentation/images DESTINATION ${RESOURCEDIR}/share/Documentation)
@@ -430,23 +495,28 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	install(FILES ${QTTRANSLATIONS} DESTINATION ${RESOURCEDIR}/translations)
 	install(FILES ${CMAKE_SOURCE_DIR}/gpl-2.0.txt DESTINATION ${RESOURCEDIR})
 	install(CODE "execute_process(COMMAND mkdir -p ${RESOURCEDIR}/qml)")
-	# this is a HACK
-	if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "DesktopExecutable" AND NOT NO_PRINTING)
-		install(DIRECTORY ${Grantlee5_DIR}/../../grantlee DESTINATION ${PLUGINDIR})
-	endif()
 	install(CODE "execute_process(COMMAND mkdir -p ${PLUGINDIR}/geoservices)")
 	install(CODE "execute_process(COMMAND cp ${_qt5Core_install_prefix}/plugins/geoservices/libqtgeoservices_googlemaps.dylib ${PLUGINDIR}/geoservices ERROR_QUIET)")
 	install(CODE "execute_process(COMMAND cp ${CMAKE_SOURCE_DIR}/../install-root/${_qt5Core_install_prefix}/plugins/geoservices/libqtgeoservices_googlemaps.dylib ${PLUGINDIR}/geoservices ERROR_QUIET)")
 	# this is a hack - but I don't know how else to find the macdeployqt program if it's not in the PATH
 	string(REPLACE moc macdeployqt MACDEPLOYQT ${QT_MOC_EXECUTABLE})
 	install(CODE "execute_process(COMMAND ${MACDEPLOYQT} ${APP_BUNDLE_DIR} -no-strip ${MACDEPLOY_ARGS})")
+	# the next hack is here to delete the sqlite plugin that get's installed even though it isn't needed
+	install(CODE "execute_process(COMMAND rm -rf ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/PlugIns/sqldrivers)")
 	# and another hack to get the QML Components in the right place
+	install(CODE "execute_process(COMMAND rm -rf ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources/qml/{QtQuick.2,QtLocation,QtPositioning})")
 	install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/qml/QtQuick.2 ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources/qml)")
 	install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/qml/QtLocation ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources/qml)")
 	install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/qml/QtPositioning ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources/qml)")
 	if(NOT Qt5Core_VERSION VERSION_LESS 5.11.0)
 		# and with Qt 5.11 we need another library that isn't copied by macdeployqt
+		install(CODE "execute_process(COMMAND rm -rf ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Frameworks/QtPositioningQuick.framework)")
 		install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/lib/QtPositioningQuick.framework ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Frameworks)")
+	endif()
+	if(NOT Qt5Core_VERSION VERSION_LESS 5.14.0)
+		# and with Qt 5.14 we need another library that isn't always copied by macdeployqt
+		install(CODE "execute_process(COMMAND rm -rf ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Frameworks/QtQmlWorkerScript.framework)")
+		install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/lib/QtQmlWorkerScript.framework ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Frameworks)")
 	endif()
 	if (SUBSURFACE_TARGET_EXECUTABLE MATCHES "MobileExecutable")
 		install(CODE "execute_process(COMMAND cp -a ${_qt5Core_install_prefix}/qml/QtQuick ${CMAKE_BINARY_DIR}/${APP_BUNDLE_DIR}/Contents/Resources/qml)")
@@ -457,7 +527,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	if (CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 		if(NOT DEFINED OBJCOPY)
-			set(OBJCOPY i686-w64-mingw32.shared-objcopy)
+			set(OBJCOPY x86_64-w64-mingw32.shared-objcopy)
 		endif()
 		find_program(OBJCOPY_FOUND ${OBJCOPY})
 		if (OBJCOPY_FOUND)
@@ -485,7 +555,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	install(FILES ${CMAKE_SOURCE_DIR}/gpl-2.0.txt ${CMAKE_SOURCE_DIR}/packaging/windows/subsurface.ico DESTINATION ${WINDOWSSTAGING})
 	install(TARGETS ${SUBSURFACE_TARGET} DESTINATION ${WINDOWSSTAGING})
 	install(FILES ${CMAKE_BINARY_DIR}/qt.conf DESTINATION ${WINDOWSSTAGING})
-	install(DIRECTORY ${CMAKE_INSTALL_PREFIX}/lib/grantlee DESTINATION ${WINDOWSSTAGING})
 
 	if(NOT Qt5Core_VERSION VERSION_LESS 5.11.0)
 		# hack to work around the fact that we don't process the dependencies of plugins
@@ -539,7 +608,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	install(DIRECTORY theme DESTINATION share/subsurface)
 	install(DIRECTORY printing_templates DESTINATION share/subsurface)
 	install(FILES ${TRANSLATIONS} DESTINATION share/subsurface/translations)
-        install(TARGETS ${SUBSURFACE_TARGET} DESTINATION bin)
+	install(TARGETS ${SUBSURFACE_TARGET} DESTINATION bin)
 endif()
 
 if (MAKE_TESTS)

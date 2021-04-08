@@ -48,8 +48,7 @@ DiveToAdd DiveListBase::removeDive(struct dive *d, std::vector<OwningTripPtr> &t
 	if (idx < 0)
 		qWarning("Deletion of unknown dive!");
 
-	if (!d->hidden_by_filter)
-		--shown_dives;
+	DiveFilter::instance()->diveRemoved(d);
 
 	res.dive.reset(unregister_dive(idx));		// Remove dive from backend
 
@@ -131,7 +130,7 @@ DivesAndTripsToAdd DiveListBase::removeDives(DivesAndSitesToRemove &divesAndSite
 	sitesToAdd.reserve(divesAndSitesToDelete.sites.size());
 
 	// Remember old number of shown dives
-	int oldShown = shown_dives;
+	int oldShown = DiveFilter::instance()->shownDives();
 
 	// Make sure that the dive list is sorted. The added dives will be sent in a signal
 	// and the recipients assume that the dives are sorted the same way as they are
@@ -165,7 +164,7 @@ DivesAndTripsToAdd DiveListBase::removeDives(DivesAndSitesToRemove &divesAndSite
 		emit diveListNotifier.divesDeleted(trip, deleteTrip, divesInTrip);
 	});
 
-	if (oldShown != shown_dives)
+	if (oldShown != DiveFilter::instance()->shownDives())
 		emit diveListNotifier.numShownChanged();
 
 	return { std::move(divesToAdd), std::move(tripsToAdd), std::move(sitesToAdd) };
@@ -469,7 +468,9 @@ void AddDive::undoit()
 	setSelection(selection, currentDive);
 }
 
-ImportDives::ImportDives(struct dive_table *dives, struct trip_table *trips, struct dive_site_table *sites, int flags, const QString &source)
+ImportDives::ImportDives(struct dive_table *dives, struct trip_table *trips, struct dive_site_table *sites,
+			 struct device_table *devices, struct filter_preset_table *filter_presets, int flags,
+			 const QString &source)
 {
 	setText(Command::Base::tr("import %n dive(s) from %1", "", dives->nr).arg(source));
 
@@ -480,7 +481,9 @@ ImportDives::ImportDives(struct dive_table *dives, struct trip_table *trips, str
 	struct dive_table dives_to_remove = empty_dive_table;
 	struct trip_table trips_to_add = empty_trip_table;
 	struct dive_site_table sites_to_add = empty_dive_site_table;
-	process_imported_dives(dives, trips, sites, flags, &dives_to_add, &dives_to_remove, &trips_to_add, &sites_to_add);
+	process_imported_dives(dives, trips, sites, devices, flags,
+			       &dives_to_add, &dives_to_remove, &trips_to_add,
+			       &sites_to_add, &devicesToAddAndRemove);
 
 	// Add trips to the divesToAdd.trips structure
 	divesToAdd.trips.reserve(trips_to_add.nr);
@@ -509,6 +512,22 @@ ImportDives::ImportDives(struct dive_table *dives, struct trip_table *trips, str
 	divesAndSitesToRemove.dives.reserve(dives_to_remove.nr);
 	for (int i = 0; i < dives_to_remove.nr; ++i)
 		divesAndSitesToRemove.dives.push_back(dives_to_remove.dives[i]);
+
+	// When encountering filter presets with equal names, check whether they are
+	// the same. If they are, ignore them.
+	if (filter_presets) {
+		for (const filter_preset &preset: *filter_presets) {
+			QString name = preset.name;
+			auto it = std::find_if(filter_preset_table.begin(), filter_preset_table.end(),
+					       [&name](const filter_preset &preset) { return preset.name == name; });
+			if (it != filter_preset_table.end() && it->data == preset.data)
+				continue;
+			filterPresetsToAdd.emplace_back(preset.name, preset.data);
+		}
+
+		// Consume the table for analogy with the other tables.
+		filter_presets->clear();
+	}
 }
 
 bool ImportDives::workToBeDone()
@@ -532,6 +551,21 @@ void ImportDives::redoit()
 
 	// Remember dives and sites to remove
 	divesAndSitesToRemove = std::move(divesAndSitesToRemoveNew);
+
+	// Add devices
+	for (const device &dev: devicesToAddAndRemove.devices) {
+		int idx = add_to_device_table(&device_table, &dev);
+		emit diveListNotifier.deviceAdded(idx);
+	}
+
+	// Add new filter presets
+	for (auto &it: filterPresetsToAdd) {
+		filterPresetsToRemove.push_back(filter_preset_add(it.first, it.second));
+		emit diveListNotifier.filterPresetAdded(filterPresetsToRemove.back());
+	}
+	filterPresetsToAdd.clear();
+
+	emit diveListNotifier.divesImported();
 }
 
 void ImportDives::undoit()
@@ -547,6 +581,25 @@ void ImportDives::undoit()
 
 	// ...and restore the selection
 	setSelection(selection, currentDive);
+
+	// Remove devices
+	for (const device &dev: devicesToAddAndRemove.devices) {
+		int idx = remove_device(&device_table, &dev);
+		if (idx >= 0)
+			emit diveListNotifier.deviceDeleted(idx);
+	}
+
+	// Remove filter presets. Do this in reverse order.
+	for (auto it = filterPresetsToRemove.rbegin(); it != filterPresetsToRemove.rend(); ++it) {
+		int index = *it;
+		QString oldName = filter_preset_name_qstring(index);
+		FilterData oldData = filter_preset_get(index);
+		filter_preset_delete(index);
+		emit diveListNotifier.filterPresetRemoved(index);
+		filterPresetsToAdd.emplace_back(oldName, oldData);
+	}
+	filterPresetsToRemove.clear();
+	std::reverse(filterPresetsToAdd.begin(), filterPresetsToAdd.end());
 }
 
 DeleteDive::DeleteDive(const QVector<struct dive*> &divesToDeleteIn)
@@ -607,7 +660,7 @@ void ShiftTime::redoit()
 		sort_dive_table(&trip->dives); // Keep the trip-table in order
 
 	// Send signals
-	QVector<dive *> dives = QVector<dive *>::fromStdVector(diveList);
+	QVector<dive *> dives = stdToQt<dive *>(diveList);
 	emit diveListNotifier.divesTimeChanged(timeChanged, dives);
 	emit diveListNotifier.divesChanged(dives, DiveField::DATETIME);
 
@@ -686,8 +739,14 @@ void TripBase::undoit()
 	redoit();
 }
 
-RemoveDivesFromTrip::RemoveDivesFromTrip(const QVector<dive *> &divesToRemove)
+RemoveDivesFromTrip::RemoveDivesFromTrip(const QVector<dive *> &divesToRemoveIn)
 {
+	// Filter out dives outside of trip. Note: This is in a separate loop to get the command-description right.
+	QVector<dive *> divesToRemove;
+	for (dive *d: divesToRemoveIn) {
+		if (d->divetrip)
+			divesToRemove.push_back(d);
+	}
 	setText(QStringLiteral("%1 [%2]").arg(Command::Base::tr("remove %n dive(s) from trip", "", divesToRemove.size())).arg(getListOfDives(divesToRemove)));
 	divesToMove.divesToMove.reserve(divesToRemove.size());
 	for (dive *d: divesToRemove) {
@@ -905,7 +964,7 @@ MoveDiveComputerToFront::MoveDiveComputerToFront(dive *d, int dc_num)
 }
 
 DeleteDiveComputer::DeleteDiveComputer(dive *d, int dc_num)
-	: DiveComputerBase(d, clone_delete_divecomputer(d, dc_num), std::min(count_divecomputers(d) - 1, dc_num))
+	: DiveComputerBase(d, clone_delete_divecomputer(d, dc_num), std::min((int)number_of_computers(d) - 1, dc_num))
 {
 	setText(Command::Base::tr("delete dive computer"));
 }

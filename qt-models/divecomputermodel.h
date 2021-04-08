@@ -3,7 +3,8 @@
 #define DIVECOMPUTERMODEL_H
 
 #include "qt-models/cleanertablemodel.h"
-#include "core/divecomputer.h"
+#include "core/device.h"
+#include <QSortFilterProxyModel>
 
 class DiveComputerModel : public CleanerTableModel {
 	Q_OBJECT
@@ -19,15 +20,21 @@ public:
 	int rowCount(const QModelIndex &parent = QModelIndex()) const override;
 	Qt::ItemFlags flags(const QModelIndex &index) const override;
 	bool setData(const QModelIndex &index, const QVariant &value, int role = Qt::EditRole) override;
-	void keepWorkingList();
 
-public
+private
 slots:
-	void remove(const QModelIndex &index);
+	void update();
+	void deviceAdded(int idx);
+	void deviceDeleted(int idx);
+	void deviceEdited(int idx);
+};
 
+class DiveComputerSortedModel : public QSortFilterProxyModel {
+public:
+	using QSortFilterProxyModel::QSortFilterProxyModel;
+	void remove(const QModelIndex &index);
 private:
-	int numRows;
-	QVector<DiveComputerNode> dcs;
+	bool lessThan(const QModelIndex &i1, const QModelIndex &i2) const;
 };
 
 #endif

@@ -4,11 +4,11 @@
 
 #ifndef NO_PRINTING
 #include <QDialog>
-#include <QPrinter>
-#include "printoptions.h"
-#include "printer.h"
 #include "templateedit.h"
+#include "printoptions.h"
 
+class Printer;
+class QPrinter;
 class QProgressBar;
 class PrintOptions;
 class PrintLayout;
@@ -18,10 +18,11 @@ class PrintDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	explicit PrintDialog(QWidget *parent = 0, Qt::WindowFlags f = 0);
+	explicit PrintDialog(bool inPlanner, QWidget *parent = 0);
 	~PrintDialog();
 
 private:
+	bool inPlanner;
 	PrintOptions *optionsWidget;
 	QProgressBar *progressBar;
 	Printer *printer;

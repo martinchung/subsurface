@@ -11,8 +11,8 @@ extern "C" {
 struct dive;
 struct trip_table;
 struct dive_site_table;
+struct device_table;
 struct deco_state;
-extern int shown_dives;
 
 struct dive_table {
 	int nr, allocated;
@@ -24,10 +24,9 @@ extern struct dive_table dive_table;
 /* this is used for both git and xml format */
 #define DATAFORMAT_VERSION 3
 
+extern void sort_dive_table(struct dive_table *table);
 extern void update_cylinder_related_info(struct dive *);
-extern void mark_divelist_changed(bool);
-extern int unsaved_changes(void);
-extern int init_decompression(struct deco_state *ds, struct dive *dive);
+extern int init_decompression(struct deco_state *ds, const struct dive *dive, bool in_planner);
 
 /* divelist core logic functions */
 extern void process_loaded_dives();
@@ -36,12 +35,15 @@ extern void process_loaded_dives();
 #define	IMPORT_IS_DOWNLOADED (1 << 1)
 #define	IMPORT_MERGE_ALL_TRIPS (1 << 2)
 #define	IMPORT_ADD_TO_NEW_TRIP (1 << 3)
-extern void add_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table, struct dive_site_table *import_sites_table,
+extern void add_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table,
+			       struct dive_site_table *import_sites_table, struct device_table *devices_to_add,
 			       int flags);
-extern void process_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table, struct dive_site_table *import_sites_table,
+extern void process_imported_dives(struct dive_table *import_table, struct trip_table *import_trip_table,
+				   struct dive_site_table *import_sites_table, struct device_table *import_devices_table,
 				   int flags,
 				   struct dive_table *dives_to_add, struct dive_table *dives_to_remove,
-				   struct trip_table *trips_to_add, struct dive_site_table *sites_to_add);
+				   struct trip_table *trips_to_add, struct dive_site_table *sites_to_add,
+				   struct device_table *devices_to_add);
 extern char *get_dive_gas_string(const struct dive *dive);
 
 extern int dive_table_get_insertion_index(struct dive_table *table, struct dive *dive);
@@ -50,7 +52,6 @@ extern void insert_dive(struct dive_table *table, struct dive *d);
 extern void get_dive_gas(const struct dive *dive, int *o2_p, int *he_p, int *o2low_p);
 extern int get_divenr(const struct dive *dive);
 extern int remove_dive(const struct dive *dive, struct dive_table *table);
-extern bool filter_dive(struct dive *d, bool shown); /* returns true if status changed */
 extern int get_dive_nr_at_idx(int idx);
 extern void set_dive_nr_for_current_dive();
 extern timestamp_t get_surface_interval(timestamp_t when);
@@ -66,6 +67,8 @@ int get_dive_id_closest_to(timestamp_t when);
 void clear_dive_file_data();
 void clear_dive_table(struct dive_table *table);
 void move_dive_table(struct dive_table *src, struct dive_table *dst);
+struct dive *unregister_dive(int idx);
+extern void delete_single_dive(int idx);
 
 #ifdef __cplusplus
 }

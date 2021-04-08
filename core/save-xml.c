@@ -15,10 +15,15 @@
 #include "dive.h"
 #include "divesite.h"
 #include "errorhelper.h"
+#include "extradata.h"
+#include "filterconstraint.h"
+#include "filterpreset.h"
+#include "sample.h"
 #include "subsurface-string.h"
 #include "subsurface-time.h"
 #include "trip.h"
 #include "device.h"
+#include "event.h"
 #include "file.h"
 #include "membuffer.h"
 #include "picture.h"
@@ -27,6 +32,7 @@
 #include "qthelper.h"
 #include "gettext.h"
 #include "tag.h"
+#include "xmlparams.h"
 
 /*
  * We're outputting utf8 in xml.
@@ -572,23 +578,23 @@ static void save_trip(struct membuffer *b, dive_trip_t *trip, bool anonymize)
 	put_format(b, "</trip>\n");
 }
 
-static void save_one_device(void *_f, const char *model, uint32_t deviceid,
-			    const char *nickname, const char *serial_nr, const char *firmware)
+static void save_one_device(struct membuffer *b, const struct device *d)
 {
-	struct membuffer *b = _f;
+	const char *model = device_get_model(d);
+	const char *nickname = device_get_nickname(d);
+	const char *serial_nr = device_get_serial(d);
+	const char *firmware = device_get_firmware(d);
 
 	/* Nicknames that are empty or the same as the device model are not interesting */
-	if (nickname) {
-		if (!*nickname || !strcmp(model, nickname))
+	if (empty_string(nickname) || !strcmp(model, nickname))
 			nickname = NULL;
-	}
 
 	/* Serial numbers that are empty are not interesting */
-	if (serial_nr && !*serial_nr)
+	if (empty_string(serial_nr))
 		serial_nr = NULL;
 
 	/* Firmware strings that are empty are not interesting */
-	if (firmware && !*firmware)
+	if (empty_string(firmware))
 		firmware = NULL;
 
 	/* Do we have anything interesting about this dive computer to save? */
@@ -597,7 +603,7 @@ static void save_one_device(void *_f, const char *model, uint32_t deviceid,
 
 	put_format(b, "<divecomputerid");
 	show_utf8(b, model, " model='", "'", 1);
-	put_format(b, " deviceid='%08x'", deviceid);
+	put_format(b, " deviceid='%08x'", device_get_id(d));
 	show_utf8(b, serial_nr, " serial='", "'", 1);
 	show_utf8(b, firmware, " firmware='", "'", 1);
 	show_utf8(b, nickname, " nickname='", "'", 1);
@@ -609,6 +615,56 @@ int save_dives(const char *filename)
 	return save_dives_logic(filename, false, false);
 }
 
+static void save_filter_presets(struct membuffer *b)
+{
+	int i;
+
+	if (filter_presets_count() <= 0)
+		return;
+	put_format(b, "<filterpresets>\n");
+	for (i = 0; i < filter_presets_count(); i++) {
+		char *name, *fulltext;
+		name = filter_preset_name(i);
+		put_format(b, " <filterpreset");
+		show_utf8(b, name, " name='", "'", 1);
+		put_format(b, ">\n");
+		free(name);
+
+		fulltext = filter_preset_fulltext_query(i);
+		if (!empty_string(fulltext)) {
+			const char *fulltext_mode = filter_preset_fulltext_mode(i);
+			show_utf8(b, fulltext_mode, "  <fulltext mode='", "'>", 1);
+			show_utf8(b, fulltext, "", "</fulltext>\n", 0);
+		}
+		free(fulltext);
+
+		for (int j = 0; j < filter_preset_constraint_count(i); j++) {
+			char *data;
+			const struct filter_constraint *constraint = filter_preset_constraint(i, j);
+			const char *type = filter_constraint_type_to_string(constraint->type);
+			put_format(b, "  <constraint");
+			show_utf8(b, type, " type='", "'", 1);
+			if (filter_constraint_has_string_mode(constraint->type)) {
+				const char *mode = filter_constraint_string_mode_to_string(constraint->string_mode);
+				show_utf8(b, mode, " string_mode='", "'", 1);
+			}
+			if (filter_constraint_has_range_mode(constraint->type)) {
+				const char *mode = filter_constraint_range_mode_to_string(constraint->range_mode);
+				show_utf8(b, mode, " range_mode='", "'", 1);
+			}
+			if (constraint->negate)
+				put_format(b, " negate='1'");
+			put_format(b, ">");
+			data = filter_constraint_data_to_string(constraint);
+			show_utf8(b, data, "", "", 0);
+			free(data);
+			put_format(b, "</constraint>\n");
+		}
+		put_format(b, " </filterpreset>\n");
+	}
+	put_format(b, "</filterpresets>\n");
+}
+
 static void save_dives_buffer(struct membuffer *b, bool select_only, bool anonymize)
 {
 	int i;
@@ -618,7 +674,11 @@ static void save_dives_buffer(struct membuffer *b, bool select_only, bool anonym
 	put_format(b, "<divelog program='subsurface' version='%d'>\n<settings>\n", DATAFORMAT_VERSION);
 
 	/* save the dive computer nicknames, if any */
-	call_for_each_dc(b, save_one_device, select_only);
+	for (int i = 0; i < nr_devices(&device_table); i++) {
+		const struct device *d = get_device(&device_table, i);
+		if (!select_only || device_used_by_selected_dive(d))
+			save_one_device(b, d);
+	}
 	if (autogroup)
 		put_format(b, "  <autogroup state='1' />\n");
 	put_format(b, "</settings>\n");
@@ -656,6 +716,9 @@ static void save_dives_buffer(struct membuffer *b, bool select_only, bool anonym
 	put_format(b, "</divesites>\n<dives>\n");
 	for (i = 0; i < trip_table.nr; ++i)
 		trip_table.trips[i]->saved = 0;
+
+	/* save the filter presets */
+	save_filter_presets(b);
 
 	/* save the dives */
 	for_each_dive(i, dive) {
@@ -775,7 +838,17 @@ int save_dives_logic(const char *filename, const bool select_only, bool anonymiz
 	return error;
 }
 
+
+static int export_dives_xslt_doit(const char *filename, struct xml_params *params, bool selected, int units, const char *export_xslt, bool anonymize);
 int export_dives_xslt(const char *filename, const bool selected, const int units, const char *export_xslt, bool anonymize)
+{
+	struct xml_params *params = alloc_xml_params();
+	int ret = export_dives_xslt_doit(filename, params, selected, units, export_xslt, anonymize);
+	free_xml_params(params);
+	return ret;
+}
+
+static int export_dives_xslt_doit(const char *filename, struct xml_params *params, bool selected, int units, const char *export_xslt, bool anonymize)
 {
 	FILE *f;
 	struct membuffer buf = { 0 };
@@ -783,9 +856,6 @@ int export_dives_xslt(const char *filename, const bool selected, const int units
 	xsltStylesheetPtr xslt = NULL;
 	xmlDoc *transformed;
 	int res = 0;
-	char *params[3];
-	int pnr = 0;
-	char unitstr[3];
 
 	if (verbose)
 		fprintf(stderr, "export_dives_xslt with stylesheet %s\n", export_xslt);
@@ -811,12 +881,9 @@ int export_dives_xslt(const char *filename, const bool selected, const int units
 	if (!xslt)
 		return report_error("Failed to open export conversion stylesheet");
 
-	snprintf(unitstr, 3, "%d", units);
-	params[pnr++] = "units";
-	params[pnr++] = unitstr;
-	params[pnr++] = NULL;
+	xml_params_add_int(params, "units", units);
 
-	transformed = xsltApplyStylesheet(xslt, doc, (const char **)params);
+	transformed = xsltApplyStylesheet(xslt, doc, xml_params_get(params));
 	xmlFreeDoc(doc);
 
 	/* Write the transformed export to file */

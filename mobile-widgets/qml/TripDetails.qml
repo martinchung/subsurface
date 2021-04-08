@@ -14,8 +14,15 @@ Kirigami.Page {
 
 	title: "" !== tripLocation ? tripLocation : qsTr("Trip details")
 	state: "view"
-	padding: Kirigami.largeSpacing
+	padding: Kirigami.Units.largeSpacing
 	background: Rectangle { color: subsurfaceTheme.backgroundColor }
+
+	// we want to use our own colors for Kirigami, so let's define our colorset
+	Kirigami.Theme.inherit: false
+	Kirigami.Theme.colorSet: Kirigami.Theme.Button
+	Kirigami.Theme.backgroundColor: subsurfaceTheme.backgroundColor
+	Kirigami.Theme.textColor: subsurfaceTheme.textColor
+
 	actions.main: saveAction
 	actions.right: cancelAction
 	onVisibleChanged: {
@@ -27,7 +34,8 @@ Kirigami.Page {
 
 	function resetState() {
 		// make sure we have the right width and reset focus / state if there aren't any unsaved changes
-		width = parent.width
+		if (parent)
+			width = parent.width
 		if (tripLocation === tripLocationField.text && tripNotes === tripNotesField.text) {
 			tripLocationField.focus = false
 			tripNotesField.focus = false
@@ -81,9 +89,9 @@ Kirigami.Page {
 			TemplateLabel {
 				Layout.columnSpan: 2
 				id: title
-			text: qsTr("Edit trip details")
-			font.pointSize: subsurfaceTheme.titlePointSize
-			font.bold: true
+				text: qsTr("Edit trip details")
+				font.pointSize: subsurfaceTheme.titlePointSize
+				font.bold: true
 			}
 			Rectangle {
 				id: spacer
@@ -115,6 +123,7 @@ Kirigami.Page {
 				id: tripNotesField
 				text: tripNotes
 				textFormat: TextEdit.PlainText
+				color: subsurfaceTheme.textColor
 				Layout.columnSpan: 2
 				Layout.fillWidth: true
 				Layout.fillHeight: true

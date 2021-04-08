@@ -6,12 +6,14 @@ class MinMaxAvgWidgetPrivate;
 class QAbstractButton;
 class QNetworkReply;
 class FilterModelBase;
+struct dive;
+struct dive_components;
 
+#include "core/units.h"
 #include <QWidget>
 #include <QGroupBox>
 #include <QDialog>
 #include <QTextEdit>
-#include <stdint.h>
 
 #include "ui_renumber.h"
 #include "ui_setpoint.h"
@@ -20,32 +22,7 @@ class FilterModelBase;
 #include "ui_urldialog.h"
 #include "ui_divecomponentselection.h"
 #include "ui_listfilter.h"
-#include "core/exif.h"
-#include "core/dive.h"
-
-
-class MinMaxAvgWidget : public QWidget {
-	Q_OBJECT
-	QLabel *avgIco, *avgValue;
-	QLabel *minIco, *minValue;
-	QLabel *maxIco, *maxValue;
-public:
-	MinMaxAvgWidget(QWidget *parent);
-	double minimum() const;
-	double maximum() const;
-	double average() const;
-	void setMinimum(double minimum);
-	void setMaximum(double maximum);
-	void setAverage(double average);
-	void setMinimum(const QString &minimum);
-	void setMaximum(const QString &maximum);
-	void setAverage(const QString &average);
-	void overrideMinToolTipText(const QString &newTip);
-	void overrideAvgToolTipText(const QString &newTip);
-	void overrideMaxToolTipText(const QString &newTip);
-	void setAvgVisibility(bool visible);
-	void clear();
-};
+#include "ui_addfilterpreset.h"
 
 class RenumberDialog : public QDialog {
 	Q_OBJECT
@@ -136,6 +113,18 @@ private:
 	Ui::DiveComponentSelectionDialog ui;
 	struct dive *targetDive;
 	struct dive_components *what;
+};
+
+class AddFilterPresetDialog : public QDialog {
+	Q_OBJECT
+public:
+	explicit AddFilterPresetDialog(const QString &defaultName, QWidget *parent);
+	QString doit(); // returns name of filter preset or empty string if user cancelled the dialog
+private
+slots:
+	void nameChanged(const QString &text);
+private:
+	Ui::AddFilterPresetDialog ui;
 };
 
 class TextHyperlinkEventFilter : public QObject {

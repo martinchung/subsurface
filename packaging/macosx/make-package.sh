@@ -18,13 +18,25 @@ VERSION=$(cd ${DIR}/subsurface; ./scripts/get-version linux)
 # first build and install Subsurface and then clean up the staging area
 # make sure we didn't lose the minimum OS version
 rm -rf ./Subsurface.app
-cmake -DCMAKE_OSX_DEPLOYMENT_TARGET=10.11 -DCMAKE_OSX_SYSROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.11.sdk .
+if [ -d /Developer/SDKs ] ; then
+	SDKROOT=/Developer/SDKs
+elif [ -d /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs ] ; then
+	SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs
+else
+	echo "Cannot find SDK sysroot (usually /Developer/SDKs or"
+	echo "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs)"
+	exit 1;
+fi
+BASESDK=$(ls $SDKROOT | grep "MacOSX10\.1.\.sdk" | head -1 | sed -e "s/MacOSX//;s/\.sdk//")
+OLDER_MAC_CMAKE="-DCMAKE_OSX_DEPLOYMENT_TARGET=${BASESDK} -DCMAKE_OSX_SYSROOT=${SDKROOT}/MacOSX${BASESDK}.sdk/"
+export PKG_CONFIG_PATH=${DIR}/install-root/lib/pkgconfig:$PKG_CONFIG_PATH
+cmake $OLDER_MAC_CMAKE .
 LIBRARY_PATH=${DIR}/install-root/lib make -j8
 LIBRARY_PATH=${DIR}/install-root/lib make install
 
 # now adjust a few references that macdeployqt appears to miss
 EXECUTABLE=Subsurface.app/Contents/MacOS/Subsurface
-for i in libgit2 libGrantlee_TextDocument.dylib libGrantlee_Templates.dylib; do
+for i in libgit2 ; do
 	OLD=$(otool -L ${EXECUTABLE} | grep $i | cut -d\  -f1 | tr -d "\t")
 	if [[ ! -z ${OLD} && ! -f Subsurface.app/Contents/Frameworks/$(basename ${OLD}) ]] ; then
 		# copy the library into the bundle and make sure its id and the reference to it are correct
@@ -65,26 +77,6 @@ RPATH=$(otool -L ${EXECUTABLE} | grep rpath  | cut -d\  -f1 | tr -d "\t" | cut -
 for i in ${RPATH}; do
 	install_name_tool -change @rpath/$i @executable_path/../Frameworks/$i ${EXECUTABLE}
 done
-
-# next deal with libGrantlee
-LIBG=$(ls Subsurface.app/Contents/Frameworks/libGrantlee_Templates*dylib)
-for i in QtScript.framework/Versions/5/QtScript QtCore.framework/Versions/5/QtCore ; do
-	install_name_tool -change @rpath/$i @executable_path/../Frameworks/$i ${LIBG}
-done
-
-# clean up shared library dependency in the Grantlee plugins
-for i in Subsurface.app/Contents/PlugIns/grantlee/5.1/*.so; do
-	OLD=$(otool -L $i | grep libGrantlee_Templates | cut -d\  -f1 | tr -d "\t")
-	SONAME=$(basename $OLD )
-	install_name_tool -change ${OLD} @executable_path/../Frameworks/${SONAME} $i;
-	OLD=$(otool -L $i | grep QtCore | cut -d\  -f1 | tr -d "\t")
-	install_name_tool -change ${OLD} @executable_path/../Frameworks/QtCore.framework/QtCore $i;
-	mv $i Subsurface.app/Contents/PlugIns/grantlee
-done
-rmdir Subsurface.app/Contents/PlugIns/grantlee/5.1
-pushd Subsurface.app/Contents/PlugIns/grantlee
-ln -s . 5.1
-popd
 
 if [ "$1" = "-nodmg" ] ; then
 	exit 0

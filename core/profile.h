@@ -80,16 +80,11 @@ struct plot_data {
 	bool icd_warning;
 };
 
-struct ev_select {
-	char *ev_name;
-	bool plot_ev;
-};
-
-extern void compare_samples(struct plot_info *p1, int idx1, int idx2, char *buf, int bufsize, bool sum);
+extern void compare_samples(const struct dive *d, const struct plot_info *pi, int idx1, int idx2, char *buf, int bufsize, bool sum);
 extern void init_plot_info(struct plot_info *pi);
-extern void create_plot_info_new(struct dive *dive, struct divecomputer *dc, struct plot_info *pi, bool fast, const struct deco_state *planner_ds);
-extern void calculate_deco_information(struct deco_state *ds, const struct deco_state *planner_de, const struct dive *dive, const struct divecomputer *dc, struct plot_info *pi, bool print_mode);
-extern int get_plot_details_new(const struct plot_info *pi, int time, struct membuffer *);
+/* when planner_dc is non-null, this is called in planner mode. */
+extern void create_plot_info_new(const struct dive *dive, const struct divecomputer *dc, struct plot_info *pi, bool fast, const struct deco_state *planner_ds);
+extern int get_plot_details_new(const struct dive *d, const struct plot_info *pi, int time, struct membuffer *);
 extern void free_plot_info_data(struct plot_info *pi);
 
 /*

@@ -23,8 +23,7 @@
 #endif
 
 class QAction;
-class DiveObjectHelper;
-class DiveSiteChange; // An obscure implementation artifact - remove in due course.
+struct DiveSiteChange; // An obscure implementation artifact - remove in due course.
 
 class QMLManager : public QObject {
 	Q_OBJECT
@@ -191,9 +190,9 @@ public slots:
 	void removeDiveFromTrip(int id);
 	void addTripForDive(int id);
 	void addDiveToTrip(int id, int tripId);
-	void changesNeedSaving();
+	void changesNeedSaving(bool fromUndo = false);
 	void openNoCloudRepo();
-	void saveChangesCloud(bool forceRemoteSync);
+	void saveChangesCloud(bool forceRemoteSync, bool fromUndo = false);
 	void selectDive(int id);
 	void deleteDive(int id);
 	void toggleDiveInvalid(int id);
@@ -218,6 +217,7 @@ public slots:
 	void clearGpsData();
 	QString getCombinedLogs();
 	void copyAppLogToClipboard();
+	void copyGpsFixesToClipboard();
 	bool createSupportEmail();
 	void finishSetup();
 	QString getNumber(const QString& diveId);
@@ -255,16 +255,15 @@ private:
 	bool m_verboseEnabled;
 	bool m_diveListProcessing;
 	bool m_initialized;
-	GpsLocation *locationProvider;
 	bool m_loadFromCloud;
 	static QMLManager *m_instance;
 	QString m_notificationText;
 	qreal m_lastDevicePixelRatio;
 	QElapsedTimer timer;
-	bool checkDate(const DiveObjectHelper &myDive, struct dive *d, QString date);
-	bool checkLocation(DiveSiteChange &change, const DiveObjectHelper &myDive, struct dive *d, QString location, QString gps);
-	bool checkDuration(const DiveObjectHelper &myDive, struct dive *d, QString duration);
-	bool checkDepth(const DiveObjectHelper &myDive, struct dive *d, QString depth);
+	bool checkDate(struct dive *d, QString date);
+	bool checkLocation(DiveSiteChange &change, struct dive *d, QString location, QString gps);
+	bool checkDuration(struct dive *d, QString duration);
+	bool checkDepth(struct dive *d, QString depth);
 	bool currentGitLocalOnly;
 	bool localChanges;
 	QString m_progressMessage;
@@ -285,7 +284,7 @@ private:
 	void consumeFinishedLoad();
 	void mergeLocalRepo();
 	void openLocalThenRemote(QString url);
-	void saveChangesLocal();
+	void saveChangesLocal(bool fromUndo = false);
 
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
 	QString appLogFileName;

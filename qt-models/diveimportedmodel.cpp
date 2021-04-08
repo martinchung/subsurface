@@ -129,6 +129,7 @@ void DiveImportedModel::downloadThreadFinished()
 	// Move the table data from thread to model
 	move_dive_table(&thread.downloadTable, &diveTable);
 	move_dive_site_table(&thread.diveSiteTable, &sitesTable);
+	deviceTable = std::move(thread.deviceTable);
 
 	checkStates.resize(diveTable.nr);
 	std::fill(checkStates.begin(), checkStates.end(), true);
@@ -143,22 +144,30 @@ void DiveImportedModel::startDownload()
 	thread.start();
 }
 
-std::pair<struct dive_table, struct dive_site_table> DiveImportedModel::consumeTables()
+void DiveImportedModel::waitForDownload()
+{
+	thread.wait();
+	downloadThreadFinished();
+}
+
+std::tuple<struct dive_table, struct dive_site_table, struct device_table> DiveImportedModel::consumeTables()
 {
 	beginResetModel();
 
 	// Move tables to result
 	struct dive_table dives = empty_dive_table;
 	struct dive_site_table sites = empty_dive_site_table;
+	struct device_table devices;
 	move_dive_table(&diveTable, &dives);
 	move_dive_site_table(&sitesTable, &sites);
+	devices = std::move(deviceTable);
 
 	// Reset indices
 	checkStates.clear();
 
 	endResetModel();
 
-	return std::make_pair(dives, sites);
+	return std::make_tuple(dives, sites, devices);
 }
 
 int DiveImportedModel::numDives() const
@@ -191,17 +200,18 @@ void DiveImportedModel::recordDives(int flags)
 	deleteDeselected();
 
 	// TODO: use structured bindings once we go C++17
-	std::pair<struct dive_table, struct dive_site_table> tables = consumeTables();
-	if (tables.first.nr > 0) {
+	std::tuple<struct dive_table, struct dive_site_table, struct device_table> tables = consumeTables();
+	if (std::get<0>(tables).nr > 0) {
 		auto data = thread.data();
-		Command::importDives(&tables.first, nullptr, &tables.second, flags, data->devName());
+		Command::importDives(&std::get<0>(tables), nullptr, &std::get<1>(tables),
+				     &std::get<2>(tables), nullptr, flags, data->devName());
 	} else {
-		clear_dive_site_table(&tables.second);
+		clear_dive_site_table(&std::get<1>(tables));
 	}
 	// The dives and dive sites have been consumed, but the arrays of the tables
 	// still exist. Free them.
-	free(tables.first.dives);
-	free(tables.second.dive_sites);
+	free(std::get<0>(tables).dives);
+	free(std::get<1>(tables).dive_sites);
 }
 
 QHash<int, QByteArray> DiveImportedModel::roleNames() const {

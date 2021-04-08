@@ -1,4 +1,4 @@
-name: Ubuntu 14.04 / Qt 5.12 for AppImage
+name: Ubuntu 14.04 / Qt 5.12 for AppImage--
 on:
   push:
     branches:
@@ -8,10 +8,10 @@ on:
     - master
 
 jobs:
-  buildInContainer:
+  buildAppImage:
     runs-on: ubuntu-latest
     container:
-      image: docker://subsurface/trusty-qt512:1.0
+      image: docker://subsurface/trusty-qt512:1.1
 
     steps:
     - name: checkout sources

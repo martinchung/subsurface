@@ -17,6 +17,69 @@ namespace {
 }
 BTDiscovery *BTDiscovery::m_instance = NULL;
 
+struct modelPattern {
+	uint16_t    model;
+	const char *vendor;
+	const char *product;
+};
+static struct modelPattern model[] = {
+	{ 0x4552, "Oceanic", "Pro Plus X" },
+	{ 0x455A, "Aqualung", "i750TC" },
+	{ 0x4647, "Sherwood", "Sage" },
+	{ 0x4648, "Aqualung", "i300C" },
+	{ 0x4649, "Aqualung", "i200C" },
+	{ 0x4651, "Aqualung", "i770R" },
+	{ 0x4652, "Aqualung", "i550C" },
+	{ 0x4653, "Oceanic", "Geo 4.0" },
+	{ 0x4654, "Oceanic", "Veo 4.0" },
+	{ 0x4655, "Sherwood", "Wisdom 4" },
+	{ 0x4656, "Oceanic", "Pro Plus 4" },
+	{ 0x4743, "Aqualung", "i470TC" }
+};
+
+struct namePattern {
+	const char *prefix;
+	const char *vendor;
+	const char *product;
+};
+static struct namePattern name[] = {
+	// Shearwater dive computers
+	{ "Predator", "Shearwater", "Predator" },
+	// both the Petrel and Petrel 2 identify as "Petrel" as BT/BLE device
+	// but only the Petrel 2 is listed as available dive computer on iOS (which requires BLE support)
+	// so always pick the "Petrel 2" as product when seeing a Petrel
+	{ "Petrel", "Shearwater", "Petrel 2" },
+	{ "Perdix", "Shearwater", "Perdix" },
+	{ "Teric", "Shearwater", "Teric" },
+	{ "Peregrine", "Shearwater", "Peregrine" },
+	{ "NERD 2", "Shearwater", "NERD 2" },
+	{ "NERD", "Shearwater", "NERD" }, // order is important, test for the more specific one first
+	{ "Predator", "Shearwater", "Predator" },
+	// Suunto dive computers
+	{ "EON Steel", "Suunto", "EON Steel" },
+	{ "EON Core", "Suunto", "EON Core" },
+	{ "Suunto D5", "Suunto", "D5" },
+	// Scubapro dive computers
+	{ "G2", "Scubapro", "G2" },
+	{ "HUD", "Scubapro", "G2 HUD" },
+	{ "Aladin", "Scubapro", "Aladin Sport Matrix" },
+	{ "A1", "Scubapro", "Aladin A1" },
+	// Mares dive computers
+	{ "Mares Genius", "Mares", "Genius" },
+	{ "Mares", "Mares", "Quad" }, // we actually don't know and just pick a common one - user needs to fix in UI
+	// Cress dive computers
+	{ "CARESIO_", "Cressi", "Cartesio" },
+	{ "GOA_", "Cressi", "Goa" },
+	// Deepblu dive computesr
+	{ "COSMIQ", "Deepblu", "Cosmiq+" },
+	// Oceans dive computers
+	{ "S1", "Oceans", "S1" },
+	// McLean dive computers
+	{ "McLean Extreme", "McLean", "Extreme" },
+	// Tecdiving dive computers
+	{ "DiveComputer", "Tecdiving", "DiveComputer.eu" }
+};
+
 static dc_descriptor_t *getDeviceType(QString btName)
 // central function to convert a BT name to a Subsurface known vendor/model pair
 {
@@ -34,86 +97,40 @@ static dc_descriptor_t *getDeviceType(QString btName)
 		// just use a default product that allows the codoe to download from the
 		// user's dive computer
 		else product = "OSTC 2";
-	} else if (btName.startsWith("Predator") ||
-		    btName.startsWith("Petrel") ||
-		    btName.startsWith("Perdix") ||
-		    btName.startsWith("Teric") ||
-		    btName.startsWith("NERD")) {
-		vendor = "Shearwater";
-		// both the Petrel and Petrel 2 identify as "Petrel" as BT/BLE device
-		// but only the Petrel 2 is listed as available dive computer on iOS (which requires BLE support)
-		// so always pick the "Petrel 2" as product when seeing a Petrel
-		if (btName.startsWith("Petrel")) product = "Petrel 2";
-		if (btName.startsWith("Perdix")) product = "Perdix";
-		if (btName.startsWith("Predator")) product = "Predator";
-		if (btName.startsWith("Teric")) product = "Teric";
-		if (btName.startsWith("NERD")) product = "Nerd"; // next line might override this
-		if (btName.startsWith("NERD 2")) product = "Nerd 2";
-	} else if (btName.startsWith("EON Steel")) {
-		vendor = "Suunto";
-		product = "EON Steel";
-	} else if (btName.startsWith("EON Core")) {
-		vendor = "Suunto";
-		product = "EON Core";
-	} else if (btName.startsWith("Suunto D5")) {
-		vendor = "Suunto";
-		product = "D5";
-	} else if (btName.startsWith("G2")  || btName.startsWith("Aladin") || btName.startsWith("HUD") || btName.startsWith("A1")) {
-		vendor = "Scubapro";
-		if (btName.startsWith("G2")) product = "G2";
-		if (btName.startsWith("HUD")) product = "G2 HUD";
-		if (btName.startsWith("Aladin")) product = "Aladin Sport Matrix";
-		if (btName.startsWith("A1")) product = "Aladin A1";
-	} else if (btName.startsWith("Mares")) {
-		vendor = "Mares";
-		// we don't know which of the dive computers it is,
-		// so let's just randomly pick one
-		product = "Quad";
-		// Some we can pick out directly
-		if (btName.startsWith("Mares Genius"))
-			product = "Genius";
-	} else if (btName.startsWith("CARTESIO_")) {
-		vendor = "Cressi";
-		product = "Cartesio";
-	} else if (btName.startsWith("GOA_")) {
-		vendor = "Cressi";
-		product = "Goa";
-	} else if (btName.contains(QRegularExpression("^FI\\d{6}$"))) {
-		// The Pelagic dive computers (generally branded as Oceanic or Aqualung)
-		// show up with a two-byte model code followed by six bytes of serial
-		// number. The model code matches the hex model (so "FQ" is 0x4651,
-		// where 'F' is 46h and 'Q' is 51h in ASCII).
-		vendor = "Aqualung";
-		product = "i200C";
-	} else if (btName.contains(QRegularExpression("^FH\\d{6}$"))) {
-		vendor = "Aqualung";
-		product = "i300C";
-	} else if (btName.contains(QRegularExpression("^FQ\\d{6}$"))) {
-		vendor = "Aqualung";
-		product = "i770R";
-	} else if (btName.contains(QRegularExpression("^FR\\d{6}$"))) {
-		vendor = "Aqualung";
-		product = "i550C";
-	} else if (btName.contains(QRegularExpression("^ER\\d{6}$"))) {
-		vendor = "Oceanic";
-		product = "Pro Plus X";
-	} else if (btName.contains(QRegularExpression("^FS\\d{6}$"))) {
-		vendor = "Oceanic";
-		product = "Geo 4.0";
 	} else if (btName.contains(QRegularExpression("^DS\\d{6}"))) {
 		// The Ratio bluetooth name looks like the Pelagic ones,
 		// but that seems to be just happenstance.
 		vendor = "Ratio";
 		product = "iX3M GPS Easy"; // we don't know which of the GPS models, so set one
-	} else if (btName == "COSMIQ") {
-		vendor = "Deepblu";
-		product = "Cosmiq+";
-	} else if (btName.startsWith("S1")) {
-		vendor = "Oceans";
-		product = "S1";
-	} else if (btName.startsWith("McLean Extreme")) {
-		vendor = "McLean";
-		product = "Extreme";
+	} else if (btName.contains(QRegularExpression("^IX5M\\d{6}"))) {
+		// The 2021 iX3M models (square buttons) report as iX5M,
+		// eventhough the physical model states iX3M.
+		vendor = "Ratio";
+		product = "iX3M GPS Easy"; // we don't know which of the GPS models, so set one
+	} else if (btName.contains(QRegularExpression("^[A-Z]{2}\\d{6}"))) {
+		// try the Pelagic/Aqualung name patterns
+		// the source of truth for this data is in libdivecomputer/src/descriptor.c
+		// we'd prefer to use the filter functions there but current design makes that really challenging
+		// The Pelagic dive computers (generally branded as Oceanic, Aqualung, or Sherwood)
+		// show up with a two-byte model code followed by six bytes of serial
+		// number. The model code matches the hex model (so "FQ" is 0x4651,
+		// where 'F' is 46h and 'Q' is 51h in ASCII).
+		for (uint16_t i = 0; i < sizeof(model) / sizeof(struct modelPattern); i++) {
+			QString pattern = QString("^%1%2\\d{6}$").arg(QChar(model[i].model >> 8)).arg(QChar(model[i].model & 0xFF));
+			if (btName.contains(QRegularExpression(pattern))) {
+				vendor = model[i].vendor;
+				product = model[i].product;
+				break;
+			}
+		}
+	} else { // finally try all the string prefix based ones
+		for (uint16_t i = 0; i < sizeof(name) / sizeof(struct namePattern); i++) {
+			if (btName.startsWith(name[i].prefix)) {
+				vendor = name[i].vendor;
+				product = name[i].product;
+				break;
+			}
+		}
 	}
 
 	// check if we found a known dive computer
@@ -167,23 +184,35 @@ void BTDiscovery::BTDiscoveryReDiscover()
 	if (1) {
 #endif
 		m_btValid = true;
-#if !defined(Q_OS_ANDROID)
+
 		if (discoveryAgent == nullptr) {
 			discoveryAgent = new QBluetoothDeviceDiscoveryAgent(this);
+			discoveryAgent->setLowEnergyDiscoveryTimeout(3 * 60 * 1000); // search for three minutes
 			connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered, this, &BTDiscovery::btDeviceDiscovered);
+			connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::finished, this, &BTDiscovery::btDeviceDiscoveryFinished);
+			connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::canceled, this, &BTDiscovery::btDeviceDiscoveryFinished);
+			connect(discoveryAgent, QOverload<QBluetoothDeviceDiscoveryAgent::Error>::of(&QBluetoothDeviceDiscoveryAgent::error),
+				[this](QBluetoothDeviceDiscoveryAgent::Error error){
+					qDebug() << "device discovery received error" << discoveryAgent->errorString();
+				});
+			qDebug() << "discovery methods" << (int)QBluetoothDeviceDiscoveryAgent::supportedDiscoveryMethods();
 		}
+#if defined(Q_OS_ANDROID)
+		// on Android, we cannot scan for classic devices - we just get the paired ones
 		qDebug() << "starting BLE discovery";
-		discoveryAgent->start();
-#else
+		discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 		getBluetoothDevices();
 		// and add the paired devices to the internal data
 		// So behaviour is same on Linux/Bluez stack and
 		// Android/Java stack with respect to discovery
 		for (int i = 0; i < btPairedDevices.length(); i++)
-			btDeviceDiscoveredMain(btPairedDevices[i]);
-#endif
+			btDeviceDiscoveredMain(btPairedDevices[i], true);
+#else
+		qDebug() << "starting BT/BLE discovery";
+		discoveryAgent->start();
 		for (int i = 0; i < btPairedDevices.length(); i++)
 			qDebug() << "Paired =" << btPairedDevices[i].name << btPairedDevices[i].address;
+#endif
 
 #if defined(Q_OS_IOS) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
 		QTimer timer;
@@ -233,6 +262,15 @@ QString markBLEAddress(const QBluetoothDeviceInfo *device)
 	return btDeviceAddress(device, isBle);
 }
 
+void BTDiscovery::btDeviceDiscoveryFinished()
+{
+	qDebug() << "BT/BLE finished discovery";
+	QList<QBluetoothDeviceInfo> devList = discoveryAgent->discoveredDevices();
+	for (QBluetoothDeviceInfo device: devList) {
+		qDebug() << device.name() << device.address().toString();
+	}
+}
+
 void BTDiscovery::btDeviceDiscovered(const QBluetoothDeviceInfo &device)
 {
 	btPairedDevice this_d;
@@ -254,10 +292,10 @@ void BTDiscovery::btDeviceDiscovered(const QBluetoothDeviceInfo &device)
 	saveBtDeviceInfo(btDeviceAddress(&device, false), device);
 #endif
 
-	btDeviceDiscoveredMain(this_d);
+	btDeviceDiscoveredMain(this_d, false);
 }
 
-void BTDiscovery::btDeviceDiscoveredMain(const btPairedDevice &device)
+void BTDiscovery::btDeviceDiscoveredMain(const btPairedDevice &device, bool fromPaired)
 {
 	btVendorProduct btVP;
 
@@ -268,10 +306,11 @@ void BTDiscovery::btDeviceDiscoveredMain(const btPairedDevice &device)
 	else
 		newDevice = device.name;
 
-	qDebug() << "Found new device:" << newDevice << device.address;
+	QString msg;
+	msg = QString("%1 device: '%2' [%3]: ").arg(fromPaired ? "Paired" : "Discovered new").arg(newDevice).arg(device.address);
 	if (newDC) {
 		QString vendor = dc_descriptor_get_vendor(newDC);
-		qDebug() << "this could be a " + vendor + " " + newDevice;
+		qDebug() << msg << "this could be a " + vendor;
 		btVP.btpdi = device;
 		btVP.dcDescriptor = newDC;
 		btVP.vendorIdx = vendorList.indexOf(vendor);
@@ -286,7 +325,7 @@ void BTDiscovery::btDeviceDiscoveredMain(const btPairedDevice &device)
 			newDevice += " ";
 		connectionListModel.addAddress(newDevice + device.address);
 	}
-	qDebug() << "Not recognized as dive computer";
+	qDebug() << msg << "not recognized as dive computer";
 }
 
 QList<BTDiscovery::btVendorProduct> BTDiscovery::getBtDcs()
@@ -384,19 +423,18 @@ void BTDiscovery::discoverAddress(QString address)
 	QString btAddress;
 	btAddress = extractBluetoothAddress(address);
 
-#if defined(Q_OS_MACOS)
-	// macOS appears to need a fresh scan if we want to switch devices
-	static QString lastAddress;
-	if (lastAddress != address) {
-		btDeviceInfo.clear();
-		discoveryAgent->stop();
-		lastAddress = address;
-	}
-#endif
 	if (!btDeviceInfo.keys().contains(address) && !discoveryAgent->isActive()) {
 		qDebug() << "restarting discovery agent";
 		discoveryAgent->start();
 	}
+}
+
+void BTDiscovery::stopAgent()
+{
+	if (!discoveryAgent)
+		return;
+	qDebug() << "---> stopping the discovery agent";
+	discoveryAgent->stop();
 }
 
 bool isBluetoothAddress(const QString &address)
@@ -437,8 +475,10 @@ void saveBtDeviceInfo(const QString &devaddr, QBluetoothDeviceInfo deviceInfo)
 
 QBluetoothDeviceInfo getBtDeviceInfo(const QString &devaddr)
 {
-	if (btDeviceInfo.contains(devaddr))
+	if (btDeviceInfo.contains(devaddr)) {
+		BTDiscovery::instance()->stopAgent();
 		return btDeviceInfo[devaddr];
+	}
 	if(!btDeviceInfo.keys().contains(devaddr)) {
 		qDebug() << "still looking scan is still running, we should just wait for a few moments";
 		// wait for a maximum of 30 more seconds
@@ -446,8 +486,10 @@ QBluetoothDeviceInfo getBtDeviceInfo(const QString &devaddr)
 		QElapsedTimer timer;
 		timer.start();
 		do {
-			if (btDeviceInfo.keys().contains(devaddr))
+			if (btDeviceInfo.keys().contains(devaddr)) {
+				BTDiscovery::instance()->stopAgent();
 				return btDeviceInfo[devaddr];
+			}
 			QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
 			QThread::msleep(100);
 		} while (timer.elapsed() < 30000);

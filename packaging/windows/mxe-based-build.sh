@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-# build Subsurface for Win32
+# build Subsurface for Windows
 #
 # this file assumes that you have installed MXE on your system
 # and installed a number of dependencies as well.
@@ -17,7 +17,7 @@
 # JOBS := 1
 #
 # # This variable controls the targets that will build.
-# MXE_TARGETS :=  i686-w64-mingw32.shared.posix.dw2
+# MXE_TARGETS :=  x86_64-w64-mingw32.shared
 #
 # # Uncomment the next line if you want to do debug builds later
 # # qtbase_CONFIGURE_OPTS=-debug-and-release
@@ -44,7 +44,6 @@
 # Something like this:
 #
 # ~/src/mxe                    <- MXE git with Qt5, automake (see above)
-#      /grantlee               <- Grantlee 5.0.0 sources from git
 #      /subsurface             <- current subsurface git
 #      /googlemaps             <- Google Maps plugin for QtLocation from git
 #      /hidapi                 <- HIDAPI library for libdivecomputer
@@ -102,7 +101,7 @@ EXECDIR=`pwd`
 BASEDIR=$(cd "$EXECDIR/.."; pwd)
 BUILDDIR=$(cd "$EXECDIR"; pwd)
 MXEDIR=${MXEDIR:-mxe}
-MXEBUILDTYPE=${MXEBUILDTYPE:-i686-w64-mingw32.shared.posix.dw2}
+MXEBUILDTYPE=${MXEBUILDTYPE:-x86_64-w64-mingw32.shared}
 
 echo $BUILDDIR
 
@@ -115,7 +114,7 @@ fi
 echo "Building in $BUILDDIR ..."
 
 export PATH="$BASEDIR"/"$MXEDIR"/usr/bin:$PATH:"$BASEDIR"/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/bin/
-export CXXFLAGS=-std=c++11
+export CXXFLAGS=-std=c++17
 
 if [[ "$1" == "debug" ]] ; then
 	RELEASE="Debug"
@@ -152,6 +151,29 @@ if [ ! -f libdivecomputer/configure ] ; then
 	cd libdivecomputer
 	autoreconf --install
 	autoreconf --install
+fi
+
+# if this is a 64bit build then build libmtp as that isn't available via MXE
+# for 32bit builds the library currently fails to build, so support for
+# MTP devices (right now just the Garmin Descent Mk2/Mk2i) is not available on 32bit Windows
+if [ "$MXEBUILDTYPE" = "x86_64-w64-mingw32.shared" ] ; then
+	cd "$BUILDDIR"
+	if [[ ! -d libmtp || -f build.libmtp ]] ; then
+		rm -f build.libmtp
+		cd "$BASEDIR/libmtp"
+		export NOCONFIGURE=1
+		echo 'N' | bash autogen.sh
+		cd "$BUILDDIR"
+		mkdir -p libmtp
+		cd libmtp
+		"$BASEDIR"/libmtp/configure \
+			CC="$MXEBUILDTYPE"-gcc \
+			--host="$MXEBUILDTYPE" \
+			--enable-shared \
+			--prefix="$BASEDIR"/"$MXEDIR"/usr/"$MXEBUILDTYPE"
+		make $JOBS
+		make install
+	fi
 fi
 
 cd "$BUILDDIR"
@@ -207,6 +229,7 @@ QT_PLUGIN_DIRECTORIES="$BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/iconen
 $BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/imageformats \
 $BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/platforms \
 $BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/geoservices \
+$BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/styles \
 $BASEDIR/"$MXEDIR"/usr/"$MXEBUILDTYPE"/qt5/plugins/printsupport"
 
 STAGING_DIR=$BUILDDIR/subsurface/staging

@@ -8,10 +8,10 @@ on:
     - master
 
 jobs:
-  buildInContainer:
+  buildWindows:
     runs-on: ubuntu-latest
     container:
-      image: docker://subsurface/mxe-build-container:1.1
+      image: docker://subsurface/mxe-build-container:2.2
 
     steps:
     - name: checkout sources

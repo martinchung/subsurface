@@ -9,6 +9,7 @@
 #include "core/dive.h"
 #include "core/color.h"
 #include "core/downloadfromdcthread.h"
+#include "core/parse.h"
 #include "core/qt-gui.h"
 #include "core/qthelper.h"
 #include "core/subsurfacestartup.h"
@@ -18,6 +19,8 @@
 #include "core/settings/qPrefCloudStorage.h"
 
 #include <QApplication>
+#include <QFont>
+#include <QFontMetrics>
 #include <QLocale>
 #include <QLoggingCategory>
 #include <QStringList>
@@ -55,9 +58,21 @@ int main(int argc, char **argv)
 		default_prefs.units = IMPERIAL_units;
 	copy_prefs(&default_prefs, &prefs);
 	fill_computer_list();
+	reset_tank_info_table(&tank_info_table);
 
 	parse_xml_init();
 	taglist_init_global();
+
+	// grab the system font size before we overwrite this when we load preferences
+	double initial_font_size = QGuiApplication::font().pointSizeF();
+	if (initial_font_size < 0.0) {
+		// The OS provides a default font in pixels, not points; doing some crude math
+		// to reverse engineer that information by measuring the height of a 10pt font in pixels
+		QFont testFont;
+		testFont.setPointSizeF(10.0);
+		QFontMetrics fm(testFont);
+		initial_font_size = QGuiApplication::font().pixelSize() * 10.0 / fm.height();
+	}
 	init_ui();
 	if (prefs.default_file_behavior == LOCAL_DEFAULT_FILE)
 		set_filename(prefs.default_filename);
@@ -74,7 +89,7 @@ int main(int argc, char **argv)
 	init_proxy();
 
 	if (!quit)
-		run_ui();
+		run_mobile_ui(initial_font_size);
 	exit_ui();
 	taglist_free(g_tag_list);
 	parse_xml_exit();
@@ -84,6 +99,7 @@ int main(int argc, char **argv)
 	qPref::sync();
 
 	free_prefs();
+	clear_tank_info_table(&tank_info_table);
 	return 0;
 }
 
@@ -100,9 +116,4 @@ void set_non_bt_addresses()
 #if defined(SERIAL_FTDI)
 	connectionListModel.addAddress("FTDI");
 #endif
-}
-
-bool haveFilesOnCommandLine()
-{
-	return false;
 }

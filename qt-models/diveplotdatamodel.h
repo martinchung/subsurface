@@ -79,16 +79,12 @@ public:
 	QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 	int rowCount(const QModelIndex &parent = QModelIndex()) const override;
 	void clear();
-	void setDive(struct dive *d, const plot_info &pInfo);
+	void setDive(const plot_info &pInfo);
 	const plot_info &data() const;
 	unsigned int dcShown() const;
-	double pheMax();
-	double pn2Max();
-	double po2Max();
-	void emitDataChanged();
-#ifndef SUBSURFACE_MOBILE
-	void calculateDecompression();
-#endif
+	double pheMax() const;
+	double pn2Max() const;
+	double po2Max() const;
 
 private:
 	struct plot_info pInfo;

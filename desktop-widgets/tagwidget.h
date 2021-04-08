@@ -18,7 +18,6 @@ public:
 	void clear();
 	void setCursorPosition(int position);
 	void wheelEvent(QWheelEvent *event);
-	void fixPopupPosition(int delta);
 public
 slots:
 	void reparse();
@@ -26,7 +25,11 @@ slots:
 	void completionHighlighted(const QString &text);
 
 protected:
-	void keyPressEvent(QKeyEvent *e);
+	void keyPressEvent(QKeyEvent *e) override;
+	void dragEnterEvent(QDragEnterEvent *e) override;
+	void dragLeaveEvent(QDragLeaveEvent *e) override;
+	void dragMoveEvent(QDragMoveEvent *e) override;
+	void dropEvent(QDropEvent *e) override;
 private:
 	void focusOutEvent(QFocusEvent *ev) override;
 	QCompleter *m_completer;

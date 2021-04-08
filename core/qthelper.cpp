@@ -5,24 +5,23 @@
 #include "core/settings/qPrefUpdateManager.h"
 #include "core/subsurface-qt/divelistnotifier.h"
 #include "subsurface-string.h"
-#include "subsurface-string.h"
 #include "gettextfromc.h"
 #include "statistics.h"
 #include "membuffer.h"
-#include "subsurfacesysinfo.h"
 #include "version.h"
 #include "errorhelper.h"
 #include "planner.h"
 #include "subsurface-time.h"
 #include "gettextfromc.h"
-#include "applicationstate.h"
 #include "metadata.h"
 #include "exif.h"
 #include "file.h"
 #include "picture.h"
+#include "selection.h"
 #include "tag.h"
 #include "trip.h"
 #include "imagedownloader.h"
+#include "xmlparams.h"
 #include <QFile>
 #include <QRegExp>
 #include <QDir>
@@ -36,9 +35,14 @@
 #include <QFont>
 #include <QApplication>
 #include <QTextDocument>
+#include <QPainter>
 #include <QProgressDialog>	// TODO: remove with convertThumbnails()
+#include <QSvgRenderer>
 #include <cstdarg>
 #include <cstdint>
+#ifdef Q_OS_UNIX
+#include <sys/utsname.h>
+#endif
 
 #include <libxslt/documents.h>
 
@@ -104,11 +108,11 @@ QString printGPSCoords(const location_t *location)
 		lonmin = (lon % 1000000U) * 60U;
 		latsec = (latmin % 1000000) * 60;
 		lonsec = (lonmin % 1000000) * 60;
-		result.sprintf("%u°%02d\'%06.3f\"%s %u°%02d\'%06.3f\"%s",
+		result = QString::asprintf("%u°%02d\'%06.3f\"%s %u°%02d\'%06.3f\"%s",
 			       latdeg, latmin / 1000000, latsec / 1000000, qPrintable(lath),
 			       londeg, lonmin / 1000000, lonsec / 1000000, qPrintable(lonh));
 	} else {
-		result.sprintf("%f %f", (double) lat / 1000000.0, (double) lon / 1000000.0);
+		result = QString::asprintf("%f %f", (double) lat / 1000000.0, (double) lon / 1000000.0);
 	}
 	return result;
 }
@@ -287,19 +291,6 @@ bool gpsHasChanged(struct dive *dive, struct dive *master, const QString &gps_te
 }
 #endif
 
-QList<int> getDivesInTrip(dive_trip_t *trip)
-{
-	QList<int> ret;
-	int i;
-	struct dive *d;
-	for_each_dive (i, d) {
-		if (d->divetrip == trip) {
-			ret.push_back(get_divenr(d));
-		}
-	}
-	return ret;
-}
-
 static xmlDocPtr get_stylesheet_doc(const xmlChar *uri, xmlDictPtr, int, void *, xsltLoadType)
 {
 	QFile f(QLatin1String(":/xslt/") + (const char *)uri);
@@ -388,12 +379,9 @@ static bool lessThan(const QPair<QString, int> &a, const QPair<QString, int> &b)
 
 QVector<QPair<QString, int>> selectedDivesGasUsed()
 {
-	int i, j;
-	struct dive *d;
+	int j;
 	QMap<QString, int> gasUsed;
-	for_each_dive (i, d) {
-		if (!d->selected)
-			continue;
+	for (dive *d: getDiveSelection()) {
 		volume_t *diveGases = get_gas_used(d);
 		for (j = 0; j < d->cylinders.nr; j++) {
 			if (diveGases[j].mliter) {
@@ -419,14 +407,24 @@ QString getUserAgent()
 	// replace all other ':' with ' ' so that this is easy to parse
 #ifdef SUBSURFACE_MOBILE
 	QString userAgent = QString("Subsurface-mobile:%1(%2):").arg(subsurface_mobile_version()).arg(subsurface_canonical_version());
+#elif SUBSURFACE_DOWNLOADER
+	QString userAgent = QString("Subsurface-downloader:%1:").arg(subsurface_canonical_version());
 #else
 	QString userAgent = QString("Subsurface:%1:").arg(subsurface_canonical_version());
 #endif
-	userAgent.append(SubsurfaceSysInfo::prettyOsName().replace(':', ' ') + ":");
-	arch = SubsurfaceSysInfo::buildCpuArchitecture().replace(':', ' ');
+	QString prettyOsName = QSysInfo::prettyProductName();
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC) && !defined(Q_OS_ANDROID)
+	// QSysInfo::kernelType() returns lowercase ("linux" instead of "Linux")
+	struct utsname u;
+	if (uname(&u) == 0)
+		prettyOsName = QString::fromLatin1(u.sysname) + QLatin1String(" (") + prettyOsName + QLatin1Char(')');
+#endif
+
+	userAgent.append(prettyOsName.replace(':', ' ') + ":");
+	arch = QSysInfo::buildCpuArchitecture().replace(':', ' ');
 	userAgent.append(arch);
 	if (arch == "i386")
-		userAgent.append("/" + SubsurfaceSysInfo::currentCpuArchitecture());
+		userAgent.append("/" + QSysInfo::currentCpuArchitecture());
 	userAgent.append(":" + getUiLanguage());
 	return userAgent;
 
@@ -543,12 +541,17 @@ QString get_depth_string(depth_t depth, bool showunit, bool showdecimal)
 	return get_depth_string(depth.mm, showunit, showdecimal);
 }
 
-QString get_depth_unit()
+QString get_depth_unit(bool metric)
 {
-	if (prefs.units.length == units::METERS)
+	if (metric)
 		return gettextFromC::tr("m");
 	else
 		return gettextFromC::tr("ft");
+}
+
+QString get_depth_unit()
+{
+	return get_depth_unit(prefs.units.length == units::METERS);
 }
 
 QString get_weight_string(weight_t weight, bool showunit)
@@ -562,12 +565,17 @@ QString get_weight_string(weight_t weight, bool showunit)
 	return str;
 }
 
-QString get_weight_unit()
+QString get_weight_unit(bool metric)
 {
-	if (prefs.units.weight == units::KG)
+	if (metric)
 		return gettextFromC::tr("kg");
 	else
 		return gettextFromC::tr("lbs");
+}
+
+QString get_weight_unit()
+{
+	return get_weight_unit(prefs.units.weight == units::KG);
 }
 
 QString get_temperature_string(temperature_t temp, bool showunit)
@@ -583,12 +591,17 @@ QString get_temperature_string(temperature_t temp, bool showunit)
 	}
 }
 
+QString get_temp_unit(bool metric)
+{
+	if (metric)
+		return QStringLiteral("°C");
+	else
+		return QStringLiteral("°F");
+}
+
 QString get_temp_unit()
 {
-	if (prefs.units.temperature == units::CELSIUS)
-		return QString("°C");
-	else
-		return QString("°F");
+	return get_temp_unit(prefs.units.temperature == units::CELSIUS);
 }
 
 QString get_volume_string(int mliter, bool showunit)
@@ -604,11 +617,17 @@ QString get_volume_string(volume_t volume, bool showunit)
 	return get_volume_string(volume.mliter, showunit);
 }
 
+QString get_volume_unit(bool metric)
+{
+	if (metric)
+		return gettextFromC::tr("ℓ");
+	else
+		return gettextFromC::tr("cuft");
+}
+
 QString get_volume_unit()
 {
-	const char *unit;
-	(void) get_volume_units(0, NULL, &unit);
-	return QString(unit);
+	return get_volume_unit(prefs.units.volume == units::LITER);
 }
 
 QString get_pressure_string(pressure_t pressure, bool showunit)
@@ -627,16 +646,34 @@ QString get_salinity_string(int salinity)
 	return QStringLiteral("%L1%2").arg(salinity / 10.0).arg(gettextFromC::tr("g/ℓ"));
 }
 
+// the water types need to match the watertypes enum
+static const char *waterTypes[] = {
+	QT_TRANSLATE_NOOP("gettextFromC", "Fresh"),
+	QT_TRANSLATE_NOOP("gettextFromC", "Brackish"),
+	QT_TRANSLATE_NOOP("gettextFromC", "EN13319"),
+	QT_TRANSLATE_NOOP("gettextFromC", "Salt"),
+	QT_TRANSLATE_NOOP("gettextFromC", "Use DC")
+};
+
 QString get_water_type_string(int salinity)
 {
 	if (salinity < 10050)
-		return waterTypes[FRESHWATER];
+		return gettextFromC::tr(waterTypes[FRESHWATER]);
 	else if (salinity < 10190)
-		return waterTypes[BRACKISHWATER];
+		return gettextFromC::tr(waterTypes[BRACKISHWATER]);
 	else if (salinity < 10210)
-		return waterTypes[EN13319WATER];
+		return gettextFromC::tr(waterTypes[EN13319WATER]);
 	else
-		return waterTypes[SALTWATER];
+		return gettextFromC::tr(waterTypes[SALTWATER]);
+}
+
+QStringList getWaterTypesAsString()
+{
+	QStringList res;
+	res.reserve(std::end(waterTypes) - std::begin(waterTypes)); // Waiting for C++17's std::size()
+	for (const char *t: waterTypes)
+		res.push_back(gettextFromC::tr(t));
+	return res;
 }
 
 QString getSubsurfaceDataPath(QString folderToFind)
@@ -829,10 +866,16 @@ int parsePressureToMbar(const QString &text)
 {
 	int mbar;
 	QString numOnly = text;
-	numOnly.replace(",", ".").remove(QRegExp("[^0-9.]"));
+	// different locales use different symbols as group separator or decimal separator
+	// (I think it's usually '.' and ',' - but maybe there are others?)
+	// let's use Qt's help to get the parsing right
+	QString validNumberCharacters("0-9");
+	validNumberCharacters += loc.decimalPoint();
+	validNumberCharacters += loc.groupSeparator();
+	numOnly.remove(QRegExp(QString("[^%1]").arg(validNumberCharacters)));
 	if (numOnly.isEmpty())
 		return 0;
-	double number = numOnly.toDouble();
+	double number = loc.toDouble(numOnly);
 	if (text.contains(gettextFromC::tr("bar"), Qt::CaseInsensitive)) {
 		mbar = lrint(number * 1000);
 	} else if (text.contains(gettextFromC::tr("psi"), Qt::CaseInsensitive)) {
@@ -949,6 +992,12 @@ QString get_dive_date_string(timestamp_t when)
 	return loc.toString(ts.toUTC(), QString(prefs.date_format) + " " + prefs.time_format);
 }
 
+// Get local seconds since Epoch from ISO formatted UTC date time + offset string
+extern "C" time_t get_dive_datetime_from_isostring(char *when) {
+	QDateTime divetime = QDateTime::fromString(when, Qt::ISODate);
+	return (time_t)(divetime.toSecsSinceEpoch());
+}
+
 QString get_short_dive_date_string(timestamp_t when)
 {
 	QDateTime ts;
@@ -989,15 +1038,23 @@ extern "C" char *get_current_date()
 	return copy_qstring(current_date);
 }
 
-QString get_trip_date_string(timestamp_t when, int nr, bool getday)
+QString get_trip_string(const dive_trip *trip)
 {
+	if (!trip)
+		return QString();
+
+	int nr = trip->dives.nr;
+	timestamp_t when = trip_date(trip);
+	bool getday = trip_is_single_day(trip);
+
 	QDateTime localTime = timestampToDateTime(when);
 
+	QString prefix = !empty_string(trip->location) ? QString(trip->location) + ", " : QString();
 	QString suffix = " " + gettextFromC::tr("(%n dive(s))", "", nr);
 	if (getday)
-		return loc.toString(localTime, prefs.date_format) + suffix;
+		return prefix + loc.toString(localTime, prefs.date_format) + suffix;
 	else
-		return loc.toString(localTime, "MMM yyyy") + suffix;
+		return prefix + loc.toString(localTime, "MMM yyyy") + suffix;
 }
 
 static QMutex hashOfMutex;
@@ -1167,11 +1224,6 @@ QString localFilePath(const QString &originalFilename)
 	return localFilenameOf.value(originalFilename, originalFilename);
 }
 
-// the water types need to match the watertypes enum
-const QStringList waterTypes = {
-	gettextFromC::tr("Fresh"), gettextFromC::tr("Brackish"), gettextFromC::tr("EN13319"), gettextFromC::tr("Salt"), gettextFromC::tr("Use DC")
-};
-
 // TODO: Apparently Qt has no simple way of listing the supported video
 // codecs? Do we have to query them by hand using QMediaPlayer::hasSupport()?
 const QStringList videoExtensionsList = {
@@ -1221,6 +1273,23 @@ QString get_gas_string(struct gasmix gas)
 	return result;
 }
 
+QStringList get_dive_gas_list(const struct dive *d)
+{
+	QStringList list;
+	for (int i = 0; i < d->cylinders.nr; i++) {
+		const cylinder_t *cyl = get_cylinder(d, i);
+		/* Check if we have the same gasmix two or more times
+		 * If yes return more verbose string */
+		int same_gas = same_gasmix_cylinder(cyl, i, d, true);
+		if (same_gas == -1)
+			list.push_back(get_gas_string(cyl->gasmix));
+		else
+			list.push_back(get_gas_string(cyl->gasmix) + QString(" (%1 %2 ").arg(gettextFromC::tr("cyl.")).arg(i + 1) +
+				cyl->type.description + ")");
+	}
+	return list;
+}
+
 QString get_taglist_string(struct tag_entry *tag_list)
 {
 	char *buffer = taglist_get_tagstring(tag_list);
@@ -1229,9 +1298,15 @@ QString get_taglist_string(struct tag_entry *tag_list)
 	return ret;
 }
 
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+#define SKIP_EMPTY Qt::SkipEmptyParts
+#else
+#define SKIP_EMPTY QString::SkipEmptyParts
+#endif
+
 QStringList stringToList(const QString &s)
 {
-	QStringList res = s.split(",", QString::SkipEmptyParts);
+	QStringList res = s.split(",", SKIP_EMPTY);
 	for (QString &str: res)
 		str = str.trimmed();
 	return res;
@@ -1408,14 +1483,9 @@ extern "C" void parse_display_units(char *line)
 	qDebug() << line;
 }
 
-extern "C" bool in_planner()
+extern "C" enum deco_mode decoMode(bool in_planner)
 {
-	return getAppState() == ApplicationState::PlanDive || getAppState() == ApplicationState::EditPlannedDive;
-}
-
-extern "C" enum deco_mode decoMode()
-{
-	return in_planner() ? prefs.planner_deco_mode : prefs.display_deco_mode;
+	return in_planner ? prefs.planner_deco_mode : prefs.display_deco_mode;
 }
 
 void init_proxy()
@@ -1444,7 +1514,7 @@ QString getUUID()
 	return uuidString;
 }
 
-int parse_seabear_header(const char *filename, char **params, int pnr)
+void parse_seabear_header(const char *filename, struct xml_params *params)
 {
 	QFile f(filename);
 
@@ -1457,8 +1527,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		if (parseLine.contains("//DIVE NR: ")) {
-			params[pnr++] = strdup("diveNro");
-			params[pnr++] = copy_qstring(parseLine.replace(QString::fromLatin1("//DIVE NR: "), QString::fromLatin1("")));
+			xml_params_add(params, "diveNro",
+				       qPrintable(parseLine.replace(QString::fromLatin1("//DIVE NR: "), QString::fromLatin1(""))));
 			break;
 		}
 	}
@@ -1472,8 +1542,9 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		if (parseLine.contains("//Hardware Version: ")) {
-			params[pnr++] = strdup("hw");
-			params[pnr++] = copy_qstring(parseLine.replace(QString::fromLatin1("//Hardware Version: "), QString::fromLatin1("\"Seabear ")).trimmed().append("\""));
+			xml_params_add(params, "hw",
+				       qPrintable(parseLine.replace(QString::fromLatin1("//Hardware Version: "),
+						  QString::fromLatin1("\"Seabear ")).trimmed().append("\"")));
 			break;
 		}
 	}
@@ -1485,8 +1556,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		if (parseLine.contains("//Log interval: ")) {
-			params[pnr++] = strdup("delta");
-			params[pnr++] = copy_qstring(parseLine.remove(QString::fromLatin1("//Log interval: ")).trimmed().remove(QString::fromLatin1(" s")));
+			xml_params_add(params, "delta",
+				       qPrintable(parseLine.remove(QString::fromLatin1("//Log interval: ")).trimmed().remove(QString::fromLatin1(" s"))));
 			break;
 		}
 	}
@@ -1500,8 +1571,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		QString needle = "//Mode: ";
 		if (parseLine.contains(needle)) {
-			params[pnr++] = strdup("diveMode");
-			params[pnr++] = copy_qstring(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\""));
+			xml_params_add(params, "diveMode",
+				       qPrintable(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\"")));
 		}
 	}
 	f.seek(0);
@@ -1513,8 +1584,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		QString needle = "//Firmware Version: ";
 		if (parseLine.contains(needle)) {
-			params[pnr++] = strdup("Firmware");
-			params[pnr++] = copy_qstring(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\""));
+			xml_params_add(params, "Firmware",
+				       qPrintable(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\"")));
 		}
 	}
 	f.seek(0);
@@ -1522,8 +1593,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		QString needle = "//Serial number: ";
 		if (parseLine.contains(needle)) {
-			params[pnr++] = strdup("Serial");
-			params[pnr++] = copy_qstring(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\""));
+			xml_params_add(params, "Serial",
+				       qPrintable(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\"")));
 		}
 	}
 	f.seek(0);
@@ -1531,8 +1602,8 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	while ((parseLine = f.readLine().trimmed()).length() > 0 && !f.atEnd()) {
 		QString needle = "//GF: ";
 		if (parseLine.contains(needle)) {
-			params[pnr++] = strdup("GF");
-			params[pnr++] = copy_qstring(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\""));
+			xml_params_add(params, "GF",
+				       qPrintable(parseLine.replace(needle, QString::fromLatin1("")).prepend("\"").append("\"")));
 		}
 	}
 	f.seek(0);
@@ -1550,36 +1621,26 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	unsigned short index = 0;
 	for (const QString &columnText: currColumns) {
 		if (columnText == "Time") {
-			params[pnr++] = strdup("timeField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "timeField", index++);
 		} else if (columnText == "Depth") {
-			params[pnr++] = strdup("depthField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "depthField", index++);
 		} else if (columnText == "Temperature") {
-			params[pnr++] = strdup("tempField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "tempField", index++);
 		} else if (columnText == "NDT") {
-			params[pnr++] = strdup("ndlField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "ndlField", index++);
 		} else if (columnText == "TTS") {
-			params[pnr++] = strdup("ttsField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "ttsField", index++);
 		} else if (columnText == "pO2_1") {
-			params[pnr++] = strdup("o2sensor1Field");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "o2sensor1Field", index++);
 		} else if (columnText == "pO2_2") {
-			params[pnr++] = strdup("o2sensor2Field");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "o2sensor2Field", index++);
 		} else if (columnText == "pO2_3") {
-			params[pnr++] = strdup("o2sensor3Field");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "o2sensor3Field", index++);
 		} else if (columnText == "Ceiling") {
 			/* TODO: Add support for dive computer reported ceiling*/
-			params[pnr++] = strdup("ceilingField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "ceilingField", index++);
 		} else if (columnText == "Tank pressure") {
-			params[pnr++] = strdup("pressureField");
-			params[pnr++] = intdup(index++);
+			xml_params_add_int(params, "pressureField", index++);
 		} else {
 			// We do not know about this value
 			qDebug() << "Seabear import found an un-handled field: " << columnText;
@@ -1587,25 +1648,12 @@ int parse_seabear_header(const char *filename, char **params, int pnr)
 	}
 
 	/* Separator is ';' and the index for that in DiveLogImportDialog constructor is 2 */
-	params[pnr++] = strdup("separatorIndex");
-	params[pnr++] = intdup(2);
+	xml_params_add_int(params, "separatorIndex", 2);
 
 	/* And metric units */
-	params[pnr++] = strdup("units");
-	params[pnr++] = intdup(0);
+	xml_params_add_int(params, "units", 0);
 
-	params[pnr] = NULL;
 	f.close();
-	return pnr;
-}
-
-char *intdup(int index)
-{
-	char tmpbuf[21];
-
-	snprintf(tmpbuf, sizeof(tmpbuf) - 2, "%d", index);
-	tmpbuf[20] = 0;
-	return strdup(tmpbuf);
 }
 
 extern "C" void print_qt_versions()
@@ -1687,3 +1735,26 @@ extern "C" void emit_reset_signal()
 {
 	emit diveListNotifier.dataReset();
 }
+
+QImage renderSVGIcon(const char *id, int size, bool transparent)
+{
+	QImage res(size, size, transparent ? QImage::Format_ARGB32 : QImage::Format_RGB32);
+	res.fill(transparent ? Qt::transparent : Qt::white);
+	QSvgRenderer svg{QString(id)};
+	QPainter painter(&res);
+	svg.render(&painter);
+	return res;
+}
+
+// As renderSVGIcon(), but render to a fixed width and scale height accordingly
+// and have a transparent background.
+QImage renderSVGIconWidth(const char *id, int size)
+{
+	QSvgRenderer svg{QString(id)};
+	QSize svgSize = svg.defaultSize();
+	QImage res(size, size * svgSize.height() / svgSize.width(), QImage::Format_ARGB32);
+	QPainter painter(&res);
+	svg.render(&painter);
+	return res;
+}
+

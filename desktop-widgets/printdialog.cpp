@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "printdialog.h"
-#include "printoptions.h"
-#include "mainwindow.h"
+#include "printer.h"
+#include "core/pref.h"
+#include "core/dive.h" // for existing_filename
 
 #ifndef NO_PRINTING
 #include <QProgressBar>
+#include <QPrinter>
 #include <QPrintPreviewDialog>
 #include <QPrintDialog>
 #include <QFileDialog>
@@ -17,8 +19,9 @@
 
 template_options::color_palette_struct ssrf_colors, almond_colors, blueshades_colors, custom_colors;
 
-PrintDialog::PrintDialog(QWidget *parent, Qt::WindowFlags f) :
-	QDialog(parent, f),
+PrintDialog::PrintDialog(bool inPlanner, QWidget *parent) :
+	QDialog(parent, QFlag(0)),
+	inPlanner(inPlanner),
 	printer(NULL),
 	qprinter(NULL)
 {
@@ -50,6 +53,7 @@ PrintDialog::PrintDialog(QWidget *parent, Qt::WindowFlags f) :
 	printOptions.color_selected = s.value("color_selected", true).toBool();
 	printOptions.landscape = s.value("landscape", false).toBool();
 	printOptions.p_template = s.value("template_selected", "one_dive.html").toString();
+	printOptions.resolution = s.value("resolution", 600).toInt();
 	templateOptions.font_index = s.value("font", 0).toInt();
 	templateOptions.font_size = s.value("font_size", 9).toDouble();
 	templateOptions.color_palette_index = s.value("color_palette", SSRF_COLORS).toInt();
@@ -86,7 +90,7 @@ PrintDialog::PrintDialog(QWidget *parent, Qt::WindowFlags f) :
 	}
 
 	// create a print options object and pass our options struct
-	optionsWidget = new PrintOptions(this, &printOptions, &templateOptions);
+	optionsWidget = new PrintOptions(this, printOptions, templateOptions);
 
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	setLayout(layout);
@@ -150,6 +154,7 @@ void PrintDialog::onFinished()
 	s.setValue("print_selected", printOptions.print_selected);
 	s.setValue("color_selected", printOptions.color_selected);
 	s.setValue("template_selected", printOptions.p_template);
+	s.setValue("resolution", printOptions.resolution);
 
 	// save template settings
 	s.setValue("font", templateOptions.font_index);
@@ -170,9 +175,10 @@ void PrintDialog::createPrinterObj()
 {
 	// create a new printer object
 	if (!printer) {
-		qprinter = new QPrinter();
+		qprinter = new QPrinter;
+		qprinter->setResolution(printOptions.resolution);
 		qprinter->setOrientation((QPrinter::Orientation)printOptions.landscape);
-		printer = new Printer(qprinter, &printOptions, &templateOptions, Printer::PRINT);
+		printer = new Printer(qprinter, printOptions, templateOptions, Printer::PRINT, inPlanner);
 	}
 }
 

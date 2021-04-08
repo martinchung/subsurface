@@ -8,15 +8,12 @@
 #include "desktop-widgets/tab-widgets/maintab.h"
 #include "desktop-widgets/mainwindow.h"
 #include "desktop-widgets/mapwidget.h"
-#include "desktop-widgets/preferences/preferencesdialog.h"
 #include "core/qthelper.h"
 #include "core/trip.h"
 #include "qt-models/diveplannermodel.h"
 #include "desktop-widgets/divelistview.h"
 #include "core/selection.h"
-#include "profile-widget/profilewidget2.h"
 #include "desktop-widgets/diveplanner.h"
-#include "core/divesitehelpers.h"
 #include "qt-models/divecomputerextradatamodel.h"
 #include "qt-models/divelocationmodel.h"
 #include "qt-models/filtermodels.h"
@@ -34,20 +31,24 @@
 #include "TabDivePhotos.h"
 #include "TabDiveStatistics.h"
 #include "TabDiveSite.h"
+#include "TabDiveComputer.h"
 
 #include <QCompleter>
-#include <QSettings>
 #include <QScrollBar>
 #include <QShortcut>
 #include <QMessageBox>
-#include <QDesktopServices>
-#include <QStringList>
 
 struct Completers {
 	QCompleter *divemaster;
 	QCompleter *buddy;
 	QCompleter *tags;
 };
+
+static bool paletteIsDark(const QPalette &p)
+{
+	// we consider a palette dark if the text color is lighter than the windows background
+	return p.window().color().valueF() < p.windowText().color().valueF();
+}
 
 MainTab::MainTab(QWidget *parent) : QTabWidget(parent),
 	editMode(false),
@@ -64,13 +65,21 @@ MainTab::MainTab(QWidget *parent) : QTabWidget(parent),
 	extraWidgets << new TabDiveInformation(this);
 	ui.tabWidget->addTab(extraWidgets.last(), tr("Information"));
 	extraWidgets << new TabDiveStatistics(this);
-	ui.tabWidget->addTab(extraWidgets.last(), tr("Statistics"));
+	ui.tabWidget->addTab(extraWidgets.last(), tr("Summary"));
 	extraWidgets << new TabDivePhotos(this);
 	ui.tabWidget->addTab(extraWidgets.last(), tr("Media"));
 	extraWidgets << new TabDiveExtraInfo(this);
 	ui.tabWidget->addTab(extraWidgets.last(), tr("Extra Info"));
 	extraWidgets << new TabDiveSite(this);
 	ui.tabWidget->addTab(extraWidgets.last(), tr("Dive sites"));
+	extraWidgets << new TabDiveComputer(this);
+	ui.tabWidget->addTab(extraWidgets.last(), tr("Device names"));
+
+	// make sure we know if this is a light or dark mode
+	isDark = paletteIsDark(palette());
+
+	// call colorsChanged() for the initial setup now that the extraWidgets are loaded
+	colorsChanged();
 
 	updateDateTimeFields();
 
@@ -80,6 +89,7 @@ MainTab::MainTab(QWidget *parent) : QTabWidget(parent),
 	connect(&diveListNotifier, &DiveListNotifier::tripChanged, this, &MainTab::tripChanged);
 	connect(&diveListNotifier, &DiveListNotifier::diveSiteChanged, this, &MainTab::diveSiteEdited);
 	connect(&diveListNotifier, &DiveListNotifier::commandExecuted, this, &MainTab::closeWarning);
+	connect(&diveListNotifier, &DiveListNotifier::settingsChanged, this, &MainTab::updateDiveInfo);
 
 	connect(ui.editDiveSiteButton, &QToolButton::clicked, MainWindow::instance(), &MainWindow::startDiveSiteEdit);
 	connect(ui.location, &DiveLocationLineEdit::entered, MapWidget::instance(), &MapWidget::centerOnIndex);
@@ -89,7 +99,7 @@ MainTab::MainTab(QWidget *parent) : QTabWidget(parent),
 	// One might think that we could listen to the precise property-changed signals of the preferences system.
 	// Alas, this is not the case. When the user switches to system-format, the preferences sends the according
 	// signal. However, the correct date and time format is set by the preferences dialog later. This should be fixed.
-	connect(PreferencesDialog::instance(), &PreferencesDialog::settingsChanged, this, &MainTab::updateDateTimeFields);
+	connect(&diveListNotifier, &DiveListNotifier::settingsChanged, this, &MainTab::updateDateTimeFields);
 
 	QAction *action = new QAction(tr("Apply changes"), this);
 	connect(action, SIGNAL(triggered(bool)), this, SLOT(acceptChanges()));
@@ -245,7 +255,6 @@ void MainTab::divesChanged(const QVector<dive *> &dives, DiveField field)
 		updateNotes(current_dive);
 	if (field.datetime) {
 		updateDateTime(current_dive);
-		MainWindow::instance()->graphics->dateTimeChanged();
 		DivePlannerPointsModel::instance()->getDiveplan().when = current_dive->when;
 	}
 	if (field.divesite)
@@ -259,7 +268,7 @@ void MainTab::divesChanged(const QVector<dive *> &dives, DiveField field)
 
 	// If duration or depth changed, the profile needs to be replotted
 	if (field.duration || field.depth)
-		MainWindow::instance()->graphics->plotDive(current_dive, true);
+		MainWindow::instance()->refreshProfile();
 }
 
 void MainTab::diveSiteEdited(dive_site *ds, int)
@@ -345,14 +354,15 @@ void MainTab::updateDiveInfo()
 {
 	ui.location->refreshDiveSiteCache();
 	// don't execute this while adding / planning a dive
-	if (editMode || MainWindow::instance()->graphics->isPlanner())
+	if (editMode || DivePlannerPointsModel::instance()->isPlanner())
 		return;
 
-	// If there is no current dive, disable all widgets except the last, which is the dive site tab.
-	// TODO: Conceptually, the dive site tab shouldn't even be a tab here!
+	// If there is no current dive, disable all widgets except the last two,
+	// which are the dive site tab and the dive computer tabs.
+	// TODO: Conceptually, these two shouldn't even be a tabs here!
 	bool enabled = current_dive != nullptr;
 	ui.notesTab->setEnabled(enabled);
-	for (int i = 0; i < extraWidgets.size() - 1; ++i)
+	for (int i = 0; i < extraWidgets.size() - 2; ++i)
 		extraWidgets[i]->setEnabled(enabled);
 
 	ignoreInput = true; // don't trigger on changes to the widgets
@@ -479,13 +489,6 @@ void MainTab::updateDiveInfo()
 		qDebug() << "Set the current dive site:" << current_dive->dive_site->uuid;
 }
 
-void MainTab::reload()
-{
-	buddyModel.updateModel();
-	diveMasterModel.updateModel();
-	tagModel.updateModel();
-}
-
 void MainTab::refreshDisplayedDiveSite()
 {
 	ui.location->setCurrentDiveSite(current_dive);
@@ -500,19 +503,15 @@ void MainTab::acceptChanges()
 	ui.dateEdit->setEnabled(true);
 	hideMessage();
 
-	if (editMode) {
-		MainWindow::instance()->showProfile();
-		DivePlannerPointsModel::instance()->setPlanMode(DivePlannerPointsModel::NOTHING);
-		Command::editProfile(&displayed_dive);
-	}
+	MainWindow::instance()->showProfile();
+	DivePlannerPointsModel::instance()->setPlanMode(DivePlannerPointsModel::NOTHING);
+	Command::editProfile(&displayed_dive);
+
 	int scrolledBy = MainWindow::instance()->diveList->verticalScrollBar()->sliderPosition();
-	if (editMode) {
-		MainWindow::instance()->diveList->reload();
-		MainWindow::instance()->refreshDisplay();
-		MainWindow::instance()->graphics->plotDive(current_dive, true);
-	} else {
-		MainWindow::instance()->refreshDisplay();
-	}
+	MainWindow::instance()->diveList->reload();
+	MainWindow::instance()->refreshDisplay();
+	MainWindow::instance()->refreshProfile();
+
 	DivePlannerPointsModel::instance()->setPlanMode(DivePlannerPointsModel::NOTHING);
 	MainWindow::instance()->diveList->verticalScrollBar()->setSliderPosition(scrolledBy);
 	MainWindow::instance()->diveList->setFocus();
@@ -524,28 +523,23 @@ void MainTab::acceptChanges()
 
 void MainTab::rejectChanges()
 {
-	if (editMode && current_dive) {
-		if (QMessageBox::warning(MainWindow::instance(), TITLE_OR_TEXT(tr("Discard the changes?"),
-									       tr("You are about to discard your changes.")),
-					 QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Discard) != QMessageBox::Discard) {
-			return;
-		}
+	if (QMessageBox::warning(MainWindow::instance(), TITLE_OR_TEXT(tr("Discard the changes?"),
+								       tr("You are about to discard your changes.")),
+				 QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Discard) != QMessageBox::Discard) {
+		return;
 	}
+
 	ui.dateEdit->setEnabled(true);
 	editMode = false;
 	hideMessage();
 	// no harm done to call cancelPlan even if we were not PLAN mode...
 	DivePlannerPointsModel::instance()->cancelPlan();
 
-	// now make sure that the correct dive is displayed
-	if (current_dive)
-		copy_dive(current_dive, &displayed_dive);
-	else
-		clear_dive(&displayed_dive);
 	updateDiveInfo();
 
 	// show the profile and dive info
-	MainWindow::instance()->graphics->plotDive(current_dive, true);
+	MainWindow::instance()->refreshDisplay();
+	MainWindow::instance()->refreshProfile();
 	MainWindow::instance()->setEnabledToolbar(true);
 	ui.editDiveSiteButton->setEnabled(!ui.location->text().isEmpty());
 }
@@ -698,4 +692,45 @@ void MainTab::clearTabs()
 {
 	for (auto widget: extraWidgets)
 		widget->clear();
+}
+
+void MainTab::changeEvent(QEvent *ev)
+{
+	if (ev->type() == QEvent::PaletteChange) {
+		// check if this is a light or dark mode
+		bool dark = paletteIsDark(palette());
+		if (dark != isDark) {
+			// things have changed, so setup the colors correctly
+			isDark = dark;
+			colorsChanged();
+		}
+	}
+	QTabWidget::changeEvent(ev);
+}
+
+// setup the colors of 'header' elements in the tab widget
+void MainTab::colorsChanged()
+{
+	QString colorText = isDark ? QStringLiteral("lightblue") : QStringLiteral("mediumblue");
+	QString lastpart = colorText + " ;}";
+
+	// only set the color if the widget is enabled
+	QString CSSLabelcolor = "QLabel:enabled { color: " + lastpart;
+	QString CSSTitlecolor = "QGroupBox::title:enabled { color: " + lastpart ;
+
+	// apply to all the group boxes
+	QList<QGroupBox *>groupBoxes = this->findChildren<QGroupBox *>();
+	for (QGroupBox *gb: groupBoxes)
+		gb->setStyleSheet(QString(CSSTitlecolor));
+
+	// apply to all labels that are marked as headers in the .ui file
+	QList<QLabel *>labels = this->findChildren<QLabel *>();
+	for (QLabel *ql: labels) {
+		if (ql->property("isHeader").toBool())
+			ql->setStyleSheet(QString(CSSLabelcolor));
+	}
+
+	// finally call the individual updateUi() functions so they can overwrite these style sheets
+	for (TabBase *widget: extraWidgets)
+		widget->updateUi(colorText);
 }
